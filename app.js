@@ -222,7 +222,13 @@ function evaluatePower() {
   if (!power) return;
   for (let guard = 0; guard < 30; guard++) {
     const s = simulate(cur);
-    if (!s.short) return;
+    if (!s.short) {
+      const r = findLeak(cur);
+      if (!r) return;
+      r.state.on = false; r.state.trip = true; touch();
+      toast(`Сработало УЗО ${r.props.ma} мА${r.props.label ? ' «' + r.props.label + '»' : ''}: ток ушёл мимо его нуля — через PE или ноль другой группы`);
+      continue;
+    }
     const b = findTrip(cur);
     if (b) {
       b.state.on = false; b.state.trip = true; touch();
@@ -241,7 +247,7 @@ function devSvg(d) {
   const h = {};
   if (sim) for (const t of p.terms(d)) h[t.id] = isHot(sim.cls(tkey(d.id, t.id)));
   const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
-  const s = { lit: ok && d.type === 'lamp', live: ok && d.type === 'sock' };
+  const s = { lit: ok && d.type === 'lamp', live: ok && d.type.startsWith('sock'), on: ok };
   return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
 }
 
@@ -279,7 +285,7 @@ function loadText(d) {
   if (!r) return null;
   const three = cur.devices.some(o => o.type === 'src3');
   const ph = three && r.ph ? ' · ' + r.ph : '';
-  if (r.st === 'ok') return { cls: 'ok', t: (d.type === 'lamp' ? 'горит' : '220 В') + ph };
+  if (r.st === 'ok') return { cls: 'ok', t: (d.type === 'lamp' ? 'горит' : d.type.startsWith('sock') ? '220 В' : 'работает') + ph };
   if (r.st === '380') return { cls: 'bad', t: '380 В! Между фазами' };
   if (r.st === 'nozero') return { cls: 'warn', t: 'нет нуля' + ph };
   return { cls: 'off', t: 'нет фазы' };
@@ -375,12 +381,13 @@ function render() {
 function renderHint() {
   let h = '', st = '';
   if (power) {
-    const loads = [...sim.loads.entries()].map(([id, r]) => [devById(id).type, r.st]);
-    const cnt = (type) => { const all = loads.filter(l => l[0] === type); return all.length ? `${all.filter(l => l[1] === 'ok').length} из ${all.length}` : null; };
-    const lamps = cnt('lamp'), socks = cnt('sock');
-    st = ['Под напряжением', lamps && 'свет: ' + lamps, socks && 'розетки: ' + socks].filter(Boolean).join(' · ');
+    const kind = t => (t === 'lamp' ? 'lamp' : t.startsWith('sock') ? 'sock' : 'app');
+    const loads = [...sim.loads.entries()].map(([id, r]) => [kind(devById(id).type), r.st]);
+    const cnt = (k) => { const all = loads.filter(l => l[0] === k); return all.length ? `${all.filter(l => l[1] === 'ok').length} из ${all.length}` : null; };
+    const lamps = cnt('lamp'), socks = cnt('sock'), apps = cnt('app');
+    st = ['Под напряжением', lamps && 'свет: ' + lamps, socks && 'розетки: ' + socks, apps && 'техника: ' + apps].filter(Boolean).join(' · ');
   }
-  if (pending && isFree(pending)) h = 'Теперь нажми на клемму, к которой подключить этот конец';
+  if (pending && isFree(pending)) h = 'Нажми на клемму, чтобы подключить конец, или на другой конец, чтобы скрутить';
   else if (pending || rubber) h = 'Нажми на вторую клемму или внутри коробки. Отмена: тап по пустому месту';
   else if (sel && sel.kind === 'wire') h = 'Тяни кружок на проводе, чтобы изогнуть. Тап по точке изгиба убирает её';
   else if (cur.devices.length <= 1 && !cur.wires.length) h = 'Добавь устройства кнопкой «Устройство». Провод: нажми на клемму, потом на вторую';
@@ -406,9 +413,19 @@ function renderPanel() {
   }
   const d = devById(sel.id), p = PARTS[d.type];
   let extra = '';
-  if (d.type === 'brk') {
+  if (p.breaker) {
     extra = `<div class="chips">${['B', 'C'].map(c => `<button class="chip ${d.props.ch === c ? 'on' : ''}" data-ch="${c}">${c}</button>`).join('')}
       <span class="sep"></span>${RATINGS.map(a => `<button class="chip ${d.props.a === a ? 'on' : ''}" data-a="${a}">${a}</button>`).join('')}<span class="muted unit">А</span></div>`;
+  }
+  if (p.rcd) {
+    extra = `<div class="chips">${[10, 30, 100, 300].map(m => `<button class="chip ${d.props.ma === m ? 'on' : ''}" data-ma="${m}">${m}</button>`).join('')}<span class="muted unit">мА</span>
+      <span class="sep"></span>${[25, 40, 63].map(a => `<button class="chip ${d.props.a === a ? 'on' : ''}" data-a="${a}">${a}</button>`).join('')}<span class="muted unit">А</span></div>`;
+  }
+  if (p.load && d.props.w != null) {
+    extra = `<label class="row-in"><span class="muted">Мощность, Вт</span><input class="inp" id="p-w" type="number" inputmode="numeric" min="0" step="100" value="${d.props.w}"></label>`;
+  }
+  if (d.type === 'twist') {
+    extra = `<div class="p-note">${d.state.weld ? 'Скрутка проварена.' : 'Скрутка не проварена.'} Нажми на неё, чтобы ${d.state.weld ? 'убрать сварку' : 'проварить'}. Перетащи на неё конец провода, чтобы добавить жилу.</div>`;
   }
   if (d.type === 'jbox') {
     extra = `<div class="chips">${[['S', 'Малая'], ['M', 'Средняя'], ['L', 'Большая']].map(([v, n]) => `<button class="chip ${d.props.size === v ? 'on' : ''}" data-size="${v}">${n}</button>`).join('')}</div>`;
@@ -422,6 +439,11 @@ function renderPanel() {
   const inp = el.querySelector('#p-label');
   inp.onfocus = () => snapshot();
   inp.oninput = () => { d.props.label = inp.value; touch(); render(); };
+  const pw = el.querySelector('#p-w');
+  if (pw) {
+    pw.onfocus = () => snapshot();
+    pw.oninput = () => { d.props.w = Math.max(0, Math.round(+pw.value || 0)); touch(); render(); };
+  }
 }
 
 $('#panel').onclick = e => {
@@ -442,11 +464,12 @@ $('#panel').onclick = e => {
     else if (act === 'dup') {
       snapshot();
       const c = JSON.parse(JSON.stringify(d)); c.id = uid(); c.x += 40; c.y += 40;
-      if (PARTS[c.type].breaker) c.state = { on: true };
+      if (PARTS[c.type].breaker || PARTS[c.type].rcd) c.state = { on: true };
       cur.devices.push(c); sel = { kind: 'dev', id: c.id };
     }
     else if (b.dataset.ch) { snapshot(); d.props.ch = b.dataset.ch; }
     else if (b.dataset.a) { snapshot(); d.props.a = +b.dataset.a; }
+    else if (b.dataset.ma) { snapshot(); d.props.ma = +b.dataset.ma; }
     else if (b.dataset.size) { snapshot(); d.props.size = b.dataset.size; }
     else return;
   }
@@ -528,8 +551,11 @@ function guessColor(...ends) {
   return db.lastColor;
 }
 function guessSec(...ends) {
-  const types = ends.filter(e => !isFree(e)).map(e => devById(e.d).type);
-  if (types.includes('sock')) return '2.5';
+  const devs = ends.filter(e => !isFree(e)).map(e => devById(e.d)), types = devs.map(d => d.type);
+  const w = Math.max(0, ...devs.map(d => d.props.w || 0));
+  if (w >= 5000) return '6';
+  if (w >= 3500) return '4';
+  if (w > 0 || types.some(t => t.startsWith('sock'))) return '2.5';
   if (types.some(t => ['lamp', 'sw1', 'sw2', 'swp', 'swx'].includes(t))) return '1.5';
   return db.lastSec;
 }
@@ -556,6 +582,20 @@ function attachEnd(ref, term) {
   w[ref.side] = { d: term.d, t: term.t };
   sel = { kind: 'wire', id: w.id };
   touch(); evaluatePower();
+}
+
+// два свободных конца скручиваем: в точке второго конца появляется скрутка, оба конца на ней
+function makeTwist(r1, r2) {
+  if (r1.w === r2.w) { toast('Нельзя скрутить два конца одного провода'); return; }
+  const w1 = wireById(r1.w), w2 = wireById(r2.w), e2 = w2[r2.side];
+  snapshot();
+  const tw = newDevice('twist', e2.x, e2.y);
+  cur.devices.push(tw);
+  w1[r1.side] = { d: tw.id, t: 'p' };
+  w2[r2.side] = { d: tw.id, t: 'p' };
+  sel = { kind: 'dev', id: tw.id };
+  touch(); evaluatePower();
+  toast('Скрутка готова. Нажми на неё, чтобы проварить');
 }
 
 // коробка, внутри которой точка (для свободных концов)
@@ -593,7 +633,16 @@ function hitTest(x, y) {
     const [tx, ty] = termPos(d, t), dd = Math.hypot(tx - x, ty - y);
     if (dd < bd) { bd = dd; best = { kind: 'term', d, t }; }
   }
-  if (best) return best;
+  if (best) {
+    // палец не точно на клемме, а на корпусе маленького устройства с переключением (скрутка) — это нажатие на корпус
+    if (bd > 7) for (const d of cur.devices) {
+      const p = PARTS[d.type];
+      if (!p.toggle || p.isBox) continue;
+      const [lx, ly] = toLocal(d, x, y), [bx, by, bw, bh] = p.box(d);
+      if (lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh) return { kind: 'dev', d, lx, ly };
+    }
+    return best;
+  }
   // свободные концы проводов
   for (const w of cur.wires) for (const side of ['a', 'b']) {
     const e = w[side];
@@ -752,7 +801,12 @@ function endPointer(e) {
       const [tx, ty] = termPos(d, t), dd = Math.hypot(tx - wx, ty - wy);
       if (dd < bd) { bd = dd; best = { d: d.id, t: t.id }; }
     }
-    if (best) attachEnd(g.ref, best); else touch();
+    // или на другом свободном конце — скручиваем
+    const other = !best && cur.wires.flatMap(w => ['a', 'b'].map(side => ({ w, side })))
+      .find(({ w, side }) => !(w.id === g.ref.w && side === g.ref.side) && isFree(w[side]) && Math.hypot(w[side].x - wx, w[side].y - wy) < Math.max(16 / view.k, 9));
+    if (best) attachEnd(g.ref, best);
+    else if (other) makeTwist(g.ref, { w: other.w.id, side: other.side });
+    else touch();
     render(); renderPanel();
     return;
   }
@@ -786,6 +840,7 @@ function tap(h, wx, wy) {
     const ref = { w: h.w.id, side: h.side };
     if (pending && !isFree(pending)) { const t = pending; pending = null; attachEnd(ref, t); }
     else if (samePend(ref)) pending = null;
+    else if (pending) { const r1 = pending; pending = null; makeTwist(r1, ref); }
     else { pending = ref; sel = null; }
     render(); renderPanel();
     return;
@@ -800,7 +855,7 @@ function tap(h, wx, wy) {
     const d = h.d, p = PARTS[d.type];
     if (p.toggle && p.toggle(d, h.lx, h.ly)) {
       touch(); evaluatePower();
-      if (!power) toast('Питание снято. Чтобы проверить, нажми «⚡ Подать» сверху');
+      if (!power && d.type !== 'twist') toast('Питание снято. Чтобы проверить, нажми «⚡ Подать» сверху');
     }
     sel = { kind: 'dev', id: d.id };
     render(); renderPanel();

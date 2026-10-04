@@ -111,9 +111,26 @@ function simulate(sc) {
   let hot = 0;
   for (const d of sc.devices) {
     for (const t of termsOf(d)) if (isHot(cls(tkey(d.id, t.id)))) hot++;
-    if (d.type === 'lamp' || d.type === 'sock') loads.set(d.id, loadStatus(cls(tkey(d.id, 'L')), cls(tkey(d.id, 'N'))));
+    if (PARTS[d.type].load) loads.set(d.id, loadStatus(cls(tkey(d.id, 'L')), cls(tkey(d.id, 'N'))));
   }
   return { short, cls, loads, hot };
+}
+
+// утечка мимо УЗО: ток нагрузки идёт через фазный полюс УЗО, а возвращается не через его N (или наоборот).
+// Проверяем по очереди: разрываем у УЗО только L, потом только N, и смотрим, какие нагрузки это задело.
+function findLeak(sc) {
+  const base = simulate(sc);
+  for (const d of sc.devices) {
+    if (!PARTS[d.type].rcd || !d.state.on) continue;
+    d.state.cutL = true; const sL = simulate(sc); delete d.state.cutL;
+    d.state.cutN = true; const sN = simulate(sc); delete d.state.cutN;
+    for (const [id, r] of base.loads) {
+      if (r.st !== 'ok') continue;
+      const viaL = sL.loads.get(id).st !== 'ok', viaN = sN.loads.get(id).st !== 'ok';
+      if (viaL !== viaN) return d;
+    }
+  }
+  return null;
 }
 
 // при КЗ выбивает ближайший к месту замыкания автомат:

@@ -39,6 +39,54 @@ function bus(kind) {
   };
 }
 
+const fmtW = w => (w >= 1000 ? (w / 1000).toFixed(1).replace('.', ',').replace(',0', '') + ' кВт' : w + ' Вт');
+const LNPE = y => [T('L', -20, y, 'L'), T('N', 0, y, 'N'), T('PE', 20, y, 'PE')];
+
+function socket(ip) {
+  return {
+    name: ip ? 'Розетка IP44' : 'Розетка', group: 'Свет и розетки', load: true,
+    box: () => [-30, -32, 60, 64],
+    terms: () => LNPE(42),
+    conn: () => [],
+    draw: (d, h, s) => `<circle class="face${s.live ? ' live' : ''}" cx="0" cy="-6" r="22"/>
+      <rect class="earth" x="-4" y="-27" width="8" height="5" rx="1"/><rect class="earth" x="-4" y="10" width="8" height="5" rx="1"/>
+      <circle class="hole" cx="-9" cy="-6" r="3.4"/><circle class="hole" cx="9" cy="-6" r="3.4"/>
+      ${ip ? '<path class="lid" d="M-24 -18 A26 26 0 0 1 24 -18"/><text class="t-xs ipt" x="0" y="-36">IP44</text>' : ''}
+      ${s.live ? '<text class="t-xs live-t" x="0" y="-14">220</text>' : ''}
+      <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`
+  };
+}
+
+function appliance(name, w, icon) {
+  return {
+    name, group: 'Техника', load: true,
+    init: { props: { w } },
+    box: () => [-35, -36, 70, 72],
+    terms: () => LNPE(46),
+    conn: () => [],
+    draw: (d, h, s) => `<rect class="body${s.on ? ' run' : ''}" x="-35" y="-36" width="70" height="62" rx="6"/>
+      <g class="ico${s.on ? ' on' : ''}">${icon}</g>
+      <text class="t-xs" x="0" y="20">${fmtW(d.props.w)}</text>
+      <rect class="strip" x="-35" y="26" width="70" height="10" rx="2"/>`
+  };
+}
+
+// модуль на DIN-рейку с фазой на входе и выходе и нулём для питания: реле напряжения, таймер, Wi-Fi реле
+function module1(name, title, icon, switchable) {
+  return {
+    name, group: 'Щит и питание',
+    init: { state: { on: true } },
+    box: () => [-20, -45, 40, 90],
+    terms: () => [T('L', -10, -55, 'x', 'L'), T('N', 10, -55, 'N', 'N'), T('out', -10, 55, 'x', '')],
+    conn: d => (d.state.on ? [['L', 'out']] : []),
+    draw: d => `<rect class="body" x="-20" y="-45" width="40" height="90" rx="3"/>
+      <text class="t-xs" x="0" y="-22">${title}</text>
+      <g class="ico">${icon}</g>
+      <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="37">${d.state.on ? 'ВКЛ' : 'ОТКЛ'}</text>`,
+    toggle: switchable ? d => { d.state.on = !d.state.on; return true; } : undefined
+  };
+}
+
 const PARTS = {
   src: {
     name: 'Ввод 220 В', group: 'Щит и питание',
@@ -104,6 +152,35 @@ const PARTS = {
       return true;
     }
   },
+
+  // УЗО 2P: срабатывает, если ток ушёл мимо его нуля (через PE или ноль другой группы)
+  rcd: {
+    name: 'УЗО 2P', group: 'Щит и питание', rcd: true,
+    init: { state: { on: true }, props: { ma: 30, a: 40 } },
+    box: () => [-36, -45, 72, 90],
+    terms: () => [T('1', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('2', -20, 55, 'x', ''), T('N2', 20, 55, 'N', '')],
+    conn: d => (d.state.on ? [!d.state.cutL && ['1', '2'], !d.state.cutN && ['N', 'N2']].filter(Boolean) : []),
+    draw: d => {
+      const on = d.state.on;
+      return `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
+      <path class="mod" d="M0 -45 V45"/>
+      <text class="t-xs" x="0" y="-25">УЗО ${esc(d.props.a)}А ${esc(d.props.ma)}мА</text>
+      <rect class="slot" x="-29" y="-16" width="58" height="36" rx="3"/>
+      <rect class="lever${on ? ' on' : ''}" x="-26" y="${on ? -14 : 4}" width="52" height="14" rx="2"/>
+      <circle class="tbtn" cx="26" cy="31" r="5"/><text class="t-xs" x="26" y="34">T</text>
+      <text class="t-xs st${on ? ' on' : ''}" x="-8" y="37">${on ? 'ВКЛ' : 'ОТКЛ'}</text>
+      ${d.state.trip ? '<circle class="trip" cx="28" cy="-38" r="4"/>' : ''}`;
+    },
+    toggle: (d, x, y) => {
+      if (!inRect(x, y, -32, -20, 64, 44)) return false;
+      if (d.state.trip) { d.state.trip = false; d.state.on = true; } else d.state.on = !d.state.on;
+      return true;
+    }
+  },
+
+  rn: module1('Реле напряжения', 'РН', '<rect class="disp" x="-14" y="-12" width="28" height="16" rx="2"/><text class="t-xs disp-t" x="0" y="-1">220</text>', false),
+  tmr: module1('Таймер', 'ТАЙМЕР', '<circle cx="0" cy="-2" r="11"/><path d="M0 -9 V-2 L5 2"/>', true),
+  wifi: module1('Wi-Fi реле', 'Wi-Fi', '<path d="M-11 -6 a16 16 0 0 1 22 0 M-7 -1 a10 10 0 0 1 14 0 M-3 4 a4 4 0 0 1 6 0"/><circle cx="0" cy="8" r="1.6"/>', true),
 
   busN: bus('N'),
   busPE: bus('PE'),
@@ -183,7 +260,7 @@ const PARTS = {
   },
 
   lamp: {
-    name: 'Лампа', group: 'Нагрузка',
+    name: 'Лампа', group: 'Свет и розетки', load: true,
     box: () => [-30, -32, 60, 64],
     terms: () => [T('L', -20, 42, 'L'), T('N', 0, 42, 'N'), T('PE', 20, 42, 'PE')],
     conn: () => [],
@@ -193,16 +270,36 @@ const PARTS = {
       <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`
   },
 
-  sock: {
-    name: 'Розетка', group: 'Нагрузка',
-    box: () => [-30, -32, 60, 64],
-    terms: () => [T('L', -20, 42, 'L'), T('N', 0, 42, 'N'), T('PE', 20, 42, 'PE')],
+  sock: socket(false),
+  sockIP: socket(true),
+
+  // техника: мощность в props.w пригодится для расчёта перегрузки автоматов
+  hob: appliance('Варочная панель', 7000, '<rect x="-20" y="-28" width="40" height="34" rx="3"/><circle cx="-9" cy="-19" r="5"/><circle cx="9" cy="-19" r="5"/><circle cx="-9" cy="-3" r="5"/><circle cx="9" cy="-3" r="5"/>'),
+  oven: appliance('Духовой шкаф', 3500, '<rect x="-20" y="-28" width="40" height="34" rx="3"/><path d="M-20 -20 H20"/><rect x="-13" y="-15" width="26" height="16" rx="2"/><circle cx="-11" cy="-24" r="1.4"/><circle cx="0" cy="-24" r="1.4"/><circle cx="11" cy="-24" r="1.4"/>'),
+  mw: appliance('СВЧ', 1200, '<rect x="-22" y="-25" width="44" height="28" rx="3"/><rect x="-17" y="-20" width="25" height="18" rx="2"/><path d="M13 -19 v4 M13 -10 v4"/>'),
+  washer: appliance('Стиральная машина', 2200, '<rect x="-18" y="-29" width="36" height="36" rx="3"/><path d="M-18 -21 H18"/><circle cx="0" cy="-5" r="10"/><circle cx="0" cy="-5" r="5"/>'),
+  dryer: appliance('Сушильная машина', 2500, '<rect x="-18" y="-29" width="36" height="36" rx="3"/><path d="M-18 -21 H18"/><circle cx="0" cy="-5" r="10"/><path d="M-6 -5 q3 -5 6 0 t6 0"/>'),
+  dish: appliance('ПММ', 2000, '<rect x="-18" y="-29" width="36" height="36" rx="3"/><path d="M-18 -21 H18"/><circle cx="-6" cy="-6" r="6"/><circle cx="7" cy="-6" r="6"/>'),
+  fridge: appliance('Холодильник', 300, '<rect x="-14" y="-30" width="28" height="38" rx="3"/><path d="M-14 -16 H14 M-8 -26 v6 M-8 -11 v9"/>'),
+  boiler: appliance('Водонагреватель', 2000, '<rect x="-14" y="-30" width="28" height="38" rx="10"/><path d="M0 -21 c-6 8 -6 12 0 12 c6 0 6 -4 0 -12Z"/>'),
+  ac: appliance('Кондиционер', 1500, '<rect x="-24" y="-26" width="48" height="20" rx="4"/><path d="M-18 -11 H18 M-12 -2 l-3 6 M0 -2 v7 M12 -2 l3 6"/>'),
+  hood: appliance('Вытяжка', 200, '<path d="M-6 -30 h12 v10 l14 12 h-40 l14 -12 Z"/><path d="M-12 -2 v5 M0 -2 v5 M12 -2 v5"/>'),
+  floor: appliance('Тёплый пол', 1500, '<path d="M-20 -27 H14 a4 4 0 0 1 0 8 H-14 a4 4 0 0 0 0 8 H14 a4 4 0 0 1 0 8 H-20"/>'),
+  pump: appliance('Насос', 750, '<circle cx="0" cy="-11" r="16"/><path d="M-8 -25 L16 -11 L-8 3"/>'),
+  heat: appliance('Прогрев труб', 300, '<path d="M-24 -20 H24 M-24 -2 H24"/><path d="M-20 -11 q4 -6 8 0 t8 0 t8 0 t8 0 t8 0"/>'),
+  fan: appliance('Вентиляция', 100, '<circle cx="0" cy="-11" r="17"/><path d="M0 -11 c-2 -8 4 -12 8 -9 c-2 4 -4 7 -8 9 Z M0 -11 c8 -2 12 4 9 8 c-4 -2 -7 -4 -9 -8 Z M0 -11 c-6 6 -13 2 -12 -3 c4 0 8 0 12 3 Z"/>'),
+
+  // скрутка с проваркой: все провода на одной точке соединены
+  twist: {
+    name: 'Скрутка', group: 'Монтаж',
+    init: { state: { weld: false } },
+    box: () => [-14, -36, 28, 32],
+    terms: () => [T('p', 0, 0, 'x', '')],
     conn: () => [],
-    draw: (d, h, s) => `<circle class="face${s.live ? ' live' : ''}" cx="0" cy="-6" r="22"/>
-      <rect class="earth" x="-4" y="-27" width="8" height="5" rx="1"/><rect class="earth" x="-4" y="10" width="8" height="5" rx="1"/>
-      <circle class="hole" cx="-9" cy="-6" r="3.4"/><circle class="hole" cx="9" cy="-6" r="3.4"/>
-      ${s.live ? '<text class="t-xs live-t" x="0" y="-14">220</text>' : ''}
-      <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`
+    draw: d => d.state.weld
+      ? `<path class="tw" d="M-7 -4 L-4 -24 L4 -24 L7 -4Z"/><circle class="weld" cx="0" cy="-27" r="6.5"/>`
+      : `<path class="tw" d="M-7 -4 L-4 -30 L4 -30 L7 -4Z"/><path class="twl" d="M-6 -9 L5 -13 M-5 -15 L4 -19 M-4 -21 L4 -25"/>`,
+    toggle: d => { d.state.weld = !d.state.weld; return true; }
   },
 
   jbox: {
@@ -233,4 +330,4 @@ const PARTS = {
   }
 };
 
-const GROUPS = ['Щит и питание', 'Выключатели', 'Нагрузка', 'Монтаж'];
+const GROUPS = ['Щит и питание', 'Выключатели', 'Свет и розетки', 'Техника', 'Монтаж'];
