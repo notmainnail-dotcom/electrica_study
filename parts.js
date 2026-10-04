@@ -45,6 +45,7 @@ const LNPE = y => [T('L', -20, y, 'L'), T('N', 0, y, 'N'), T('PE', 20, y, 'PE')]
 function socket(ip) {
   return {
     name: ip ? 'Розетка IP44' : 'Розетка', group: 'Свет и розетки', load: true,
+    init: { props: { w: 0 } }, // что включено в розетку
     box: () => [-30, -32, 60, 64],
     terms: () => LNPE(42),
     conn: () => [],
@@ -110,10 +111,11 @@ const PARTS = {
 
   brk: {
     name: 'Автомат 1P', group: 'Щит и питание', breaker: true,
+    poles: [['1', '2']],
     init: { state: { on: true }, props: { ch: 'C', a: 16 } },
     box: () => [-18, -45, 36, 90],
     terms: () => [T('1', 0, -55, 'x', ''), T('2', 0, 55, 'x', '')],
-    conn: d => (d.state.on ? [['1', '2']] : []),
+    conn: d => (d.state.on ? [['1', '2']].filter(g => g[0] !== d.state.cut) : []),
     draw: d => {
       const on = d.state.on;
       return `<rect class="body" x="-18" y="-45" width="36" height="90" rx="3"/>
@@ -132,10 +134,11 @@ const PARTS = {
 
   brk3: {
     name: 'Автомат 3P', group: 'Щит и питание', breaker: true,
+    poles: [['1', '2'], ['3', '4'], ['5', '6']],
     init: { state: { on: true }, props: { ch: 'C', a: 25 } },
     box: () => [-54, -45, 108, 90],
     terms: () => [T('1', -36, -55, 'x', ''), T('3', 0, -55, 'x', ''), T('5', 36, -55, 'x', ''), T('2', -36, 55, 'x', ''), T('4', 0, 55, 'x', ''), T('6', 36, 55, 'x', '')],
-    conn: d => (d.state.on ? [['1', '2'], ['3', '4'], ['5', '6']] : []),
+    conn: d => (d.state.on ? [['1', '2'], ['3', '4'], ['5', '6']].filter(g => g[0] !== d.state.cut) : []),
     draw: d => {
       const on = d.state.on;
       return `<rect class="body" x="-54" y="-45" width="108" height="90" rx="3"/>
@@ -261,6 +264,7 @@ const PARTS = {
 
   lamp: {
     name: 'Лампа', group: 'Свет и розетки', load: true,
+    init: { props: { w: 100 } },
     box: () => [-30, -32, 60, 64],
     terms: () => [T('L', -20, 42, 'L'), T('N', 0, 42, 'N'), T('PE', 20, 42, 'PE')],
     conn: () => [],
@@ -289,17 +293,13 @@ const PARTS = {
   heat: appliance('Прогрев труб', 300, '<path d="M-24 -20 H24 M-24 -2 H24"/><path d="M-20 -11 q4 -6 8 0 t8 0 t8 0 t8 0 t8 0"/>'),
   fan: appliance('Вентиляция', 100, '<circle cx="0" cy="-11" r="17"/><path d="M0 -11 c-2 -8 4 -12 8 -9 c-2 4 -4 7 -8 9 Z M0 -11 c8 -2 12 4 9 8 c-4 -2 -7 -4 -9 -8 Z M0 -11 c-6 6 -13 2 -12 -3 c4 0 8 0 12 3 Z"/>'),
 
-  // скрутка с проваркой: все провода на одной точке соединены
+  // скрутка: точка, где сходятся концы проводов; рисуется самой клеммой (node), корпуса нет
   twist: {
-    name: 'Скрутка', group: 'Монтаж',
-    init: { state: { weld: false } },
-    box: () => [-14, -36, 28, 32],
+    name: 'Скрутка', group: 'Монтаж', node: true, hidden: true, noLabel: true, noRotate: true,
+    box: () => [-6, -6, 12, 12],
     terms: () => [T('p', 0, 0, 'x', '')],
     conn: () => [],
-    draw: d => d.state.weld
-      ? `<path class="tw" d="M-7 -4 L-4 -24 L4 -24 L7 -4Z"/><circle class="weld" cx="0" cy="-27" r="6.5"/>`
-      : `<path class="tw" d="M-7 -4 L-4 -30 L4 -30 L7 -4Z"/><path class="twl" d="M-6 -9 L5 -13 M-5 -15 L4 -19 M-4 -21 L4 -25"/>`,
-    toggle: d => { d.state.weld = !d.state.weld; return true; }
+    draw: () => ''
   },
 
   jbox: {

@@ -116,6 +116,33 @@ function simulate(sc) {
   return { short, cls, loads, hot };
 }
 
+// мощность нагрузки, Вт (у старых схем props.w может не быть — берём значение по умолчанию)
+const loadW = d => d.props.w ?? PARTS[d.type].init?.props?.w ?? 0;
+const VOLT = 220;
+
+// ток через каждый включённый автомат, А (по самому нагруженному полюсу).
+// Полюс по очереди разрываем: нагрузки, которые от этого обесточились, питаются через него.
+function breakerCurrents(sc, base) {
+  const res = new Map();
+  const ok = [...base.loads].filter(([, r]) => r.st === 'ok').map(([id]) => sc.devices.find(d => d.id === id));
+  if (!ok.length) return res;
+  for (const d of sc.devices) {
+    const p = PARTS[d.type];
+    if (!p.breaker || !d.state.on) continue;
+    let max = 0;
+    for (const pole of p.poles) {
+      d.state.cut = pole[0];
+      const s = simulate(sc);
+      delete d.state.cut;
+      let I = 0;
+      for (const l of ok) if (s.loads.get(l.id).st !== 'ok') I += loadW(l) / VOLT;
+      max = Math.max(max, I);
+    }
+    res.set(d.id, max);
+  }
+  return res;
+}
+
 // утечка мимо УЗО: ток нагрузки идёт через фазный полюс УЗО, а возвращается не через его N (или наоборот).
 // Проверяем по очереди: разрываем у УЗО только L, потом только N, и смотрим, какие нагрузки это задело.
 function findLeak(sc) {

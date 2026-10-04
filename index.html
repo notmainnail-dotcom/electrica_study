@@ -187,9 +187,8 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 .tbtn { fill: var(--dev-soft); stroke: var(--dev-line); stroke-width: 1; }
 .lid { fill: none; stroke: var(--dev-line); stroke-width: 2.4; }
 .ipt { fill: var(--muted); }
-.tw { fill: var(--acc); stroke: var(--dev-line); stroke-width: 1.2; }
-.twl { stroke: #fff; stroke-width: 1.4; opacity: .8; }
-.weld { fill: #D9DDE2; stroke: #6A717B; stroke-width: 1.4; }
+.node { fill: #C98B4F; stroke: var(--casing); stroke-width: 1.5; }
+.node.hot { fill: var(--hot); }
 .row-in { display: flex; align-items: center; gap: 10px; }
 .row-in .inp { width: 120px; }
 .p-note { font-size: 13px; color: var(--muted); }
@@ -230,7 +229,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 
 .lead { stroke: var(--dev-line); stroke-width: 1.6; }
 .term { fill: var(--dev); stroke-width: 2.2; }
-.term.k-L, .term.k-L1 { stroke: var(--w-brown); } .term.k-L2 { stroke: var(--k-l2); } .term.k-L3 { stroke: var(--w-grey); } .term.k-N { stroke: var(--w-blue); } .term.k-PE { stroke: var(--w-green); } .term.k-x { stroke: var(--dev-line); }
+.term.k-L, .term.k-L1 { stroke: var(--dev-line); } .term.k-L2 { stroke: var(--k-l2); } .term.k-L3 { stroke: var(--w-grey); } .term.k-N { stroke: var(--w-blue); } .term.k-PE { stroke: var(--w-green); } .term.k-x { stroke: var(--dev-line); }
 .term.hot { fill: var(--hot); }
 .pend-ring { fill: var(--acc-soft); stroke: var(--acc); stroke-width: 2; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { stroke-opacity: .3; fill-opacity: .4; } }
