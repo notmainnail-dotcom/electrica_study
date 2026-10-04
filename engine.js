@@ -25,14 +25,26 @@ function worldBox(d, withTerms) {
   return [x1 + d.x, y1 + d.y, x2 + d.x, y2 + d.y];
 }
 
-// точки провода: клемма A, изгибы, клемма B (null, если клеммы уже нет)
-function wirePts(sc, w) {
-  const da = sc.devices.find(d => d.id === w.a.d), db = sc.devices.find(d => d.id === w.b.d);
-  if (!da || !db) return null;
-  const ta = termsOf(da).find(t => t.id === w.a.t), tb = termsOf(db).find(t => t.id === w.b.t);
-  if (!ta || !tb) return null;
-  return [termPos(da, ta), ...(w.pts || []), termPos(db, tb)];
+// конец провода: на клемме { d, t } или свободный (лежит в коробке) { x, y }
+const isFree = e => e.d == null;
+function endPos(sc, e) {
+  if (isFree(e)) return [e.x, e.y];
+  const d = sc.devices.find(o => o.id === e.d);
+  const t = d && termsOf(d).find(q => q.id === e.t);
+  return t ? termPos(d, t) : null;
 }
+// клемма, через которую провод связан со схемой (null, если оба конца свободны)
+const wireKey = w => (!isFree(w.a) ? tkey(w.a.d, w.a.t) : !isFree(w.b) ? tkey(w.b.d, w.b.t) : null);
+
+// точки провода: конец A, изгибы, конец B (null, если клеммы уже нет)
+function wirePts(sc, w) {
+  const a = endPos(sc, w.a), b = endPos(sc, w.b);
+  return a && b ? [a, ...(w.pts || []), b] : null;
+}
+
+// фазы: L однофазного ввода считаем L1
+const PHASES = ['L1', 'L2', 'L3'];
+const isHot = c => !!c && c[0] === 'L';
 
 // узлы схемы: объединение клемм через провода и замкнутые контакты
 function nets(sc) {
@@ -48,7 +60,7 @@ function nets(sc) {
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra && rb && ra !== rb) parent.set(ra, rb); };
   for (const d of sc.devices) for (const t of termsOf(d)) add(tkey(d.id, t.id));
   for (const d of sc.devices) for (const g of PARTS[d.type].conn(d)) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
-  for (const w of sc.wires) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
+  for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
   return find;
 }
 
@@ -64,25 +76,44 @@ function netKinds(sc) {
   return k => kinds.get(find(k)) || new Set();
 }
 
+// что получает нагрузка (лампа, розетка) по классам её клемм L и N
+// ok — фаза и ноль; nophase — фазы нет; nozero — нет нуля; 380 — две разные фазы
+function loadStatus(a, b) {
+  const ha = isHot(a), hb = isHot(b);
+  if (ha && hb) return a === b ? { st: 'nozero', ph: a } : { st: '380' };
+  if (!ha && !hb) return { st: 'nophase' };
+  const ph = ha ? a : b, other = ha ? b : a;
+  return { st: other === 'N' || other === 'PE' ? 'ok' : 'nozero', ph };
+}
+
 // расчёт при поданном питании
 function simulate(sc) {
   const find = nets(sc);
-  const L = new Set(), N = new Set(), PE = new Set();
-  for (const d of sc.devices) if (d.type === 'src') {
-    L.add(find(tkey(d.id, 'L'))); N.add(find(tkey(d.id, 'N'))); PE.add(find(tkey(d.id, 'PE')));
+  const marks = new Map(); // узел → какие потенциалы в него пришли
+  const mark = (k, c) => { const r = find(k); if (r == null) return; if (!marks.has(r)) marks.set(r, new Set()); marks.get(r).add(c); };
+  for (const d of sc.devices) {
+    if (d.type === 'src') mark(tkey(d.id, 'L'), 'L1');
+    if (d.type === 'src3') PHASES.forEach(p => mark(tkey(d.id, p), p));
+    if (d.type === 'src' || d.type === 'src3') { mark(tkey(d.id, 'N'), 'N'); mark(tkey(d.id, 'PE'), 'PE'); }
   }
-  const short = [...L].some(r => N.has(r) || PE.has(r));
-  const cls = k => { const r = find(k); return r == null ? null : L.has(r) ? 'L' : N.has(r) ? 'N' : PE.has(r) ? 'PE' : null; };
-  const lit = new Set(), live = new Set();
+  // КЗ: фаза встретилась с другой фазой, нулём или землёй
+  let short = false;
+  for (const s of marks.values()) {
+    const ph = PHASES.filter(p => s.has(p)).length;
+    if (ph > 1 || (ph === 1 && (s.has('N') || s.has('PE')))) short = true;
+  }
+  const cls = k => {
+    const s = marks.get(find(k));
+    if (!s) return null;
+    return PHASES.find(p => s.has(p)) || (s.has('N') ? 'N' : 'PE');
+  };
+  const loads = new Map();
   let hot = 0;
   for (const d of sc.devices) {
-    for (const t of termsOf(d)) if (cls(tkey(d.id, t.id)) === 'L') hot++;
-    if (d.type !== 'lamp' && d.type !== 'sock') continue;
-    const a = cls(tkey(d.id, 'L')), b = cls(tkey(d.id, 'N'));
-    const zero = c => c === 'N' || c === 'PE';
-    if ((a === 'L' && zero(b)) || (b === 'L' && zero(a))) (d.type === 'lamp' ? lit : live).add(d.id);
+    for (const t of termsOf(d)) if (isHot(cls(tkey(d.id, t.id)))) hot++;
+    if (d.type === 'lamp' || d.type === 'sock') loads.set(d.id, loadStatus(cls(tkey(d.id, 'L')), cls(tkey(d.id, 'N'))));
   }
-  return { short, cls, lit, live, hot };
+  return { short, cls, loads, hot };
 }
 
 // при КЗ выбивает ближайший к месту замыкания автомат:
@@ -90,7 +121,7 @@ function simulate(sc) {
 function findTrip(sc) {
   let best = null, bestHot = -1;
   for (const d of sc.devices) {
-    if (d.type !== 'brk' || !d.state.on) continue;
+    if (!PARTS[d.type].breaker || !d.state.on) continue;
     d.state.on = false;
     const s = simulate(sc);
     d.state.on = true;

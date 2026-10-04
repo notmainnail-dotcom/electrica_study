@@ -50,8 +50,18 @@ const PARTS = {
       <text class="t-m" x="12" y="-3">ВВОД</text><text class="t-s" x="12" y="11">~220 В</text>`
   },
 
+  src3: {
+    name: 'Ввод 380 В', group: 'Щит и питание',
+    box: () => [-80, -30, 160, 60],
+    terms: () => [T('L1', -60, 40, 'L1'), T('L2', -30, 40, 'L2'), T('L3', 0, 40, 'L3'), T('N', 30, 40, 'N'), T('PE', 60, 40, 'PE')],
+    conn: () => [],
+    draw: () => `<rect class="body" x="-80" y="-30" width="160" height="60" rx="6"/>
+      <path class="bolt" d="M-52 -20 L-62 0 H-54 L-59 16 L-44 -6 H-52 L-46 -20Z"/>
+      <text class="t-m" x="14" y="-3">ВВОД 3Ф</text><text class="t-s" x="14" y="11">~380/220 В</text>`
+  },
+
   brk: {
-    name: 'Автомат 1P', group: 'Щит и питание',
+    name: 'Автомат 1P', group: 'Щит и питание', breaker: true,
     init: { state: { on: true }, props: { ch: 'C', a: 16 } },
     box: () => [-18, -45, 36, 90],
     terms: () => [T('1', 0, -55, 'x', ''), T('2', 0, 55, 'x', '')],
@@ -61,12 +71,35 @@ const PARTS = {
       return `<rect class="body" x="-18" y="-45" width="36" height="90" rx="3"/>
       <text class="t-s" x="0" y="-31">${esc(d.props.ch)}${esc(d.props.a)}</text>
       <rect class="slot" x="-9" y="-22" width="18" height="44" rx="3"/>
-      <rect class="lever" x="-7" y="${on ? -20 : 2}" width="14" height="18" rx="2"/>
-      <text class="t-xs" x="0" y="37">${on ? 'I' : 'O'}</text>
+      <rect class="lever${on ? ' on' : ''}" x="-7" y="${on ? -20 : 2}" width="14" height="18" rx="2"/>
+      <text class="t-xs st${on ? ' on' : ''}" x="0" y="37">${on ? 'ВКЛ' : 'ОТКЛ'}</text>
       ${d.state.trip ? '<circle class="trip" cx="10" cy="-38" r="4"/>' : ''}`;
     },
     toggle: (d, x, y) => {
       if (!inRect(x, y, -16, -28, 32, 56)) return false;
+      if (d.state.trip) { d.state.trip = false; d.state.on = true; } else d.state.on = !d.state.on;
+      return true;
+    }
+  },
+
+  brk3: {
+    name: 'Автомат 3P', group: 'Щит и питание', breaker: true,
+    init: { state: { on: true }, props: { ch: 'C', a: 25 } },
+    box: () => [-54, -45, 108, 90],
+    terms: () => [T('1', -36, -55, 'x', ''), T('3', 0, -55, 'x', ''), T('5', 36, -55, 'x', ''), T('2', -36, 55, 'x', ''), T('4', 0, 55, 'x', ''), T('6', 36, 55, 'x', '')],
+    conn: d => (d.state.on ? [['1', '2'], ['3', '4'], ['5', '6']] : []),
+    draw: d => {
+      const on = d.state.on;
+      return `<rect class="body" x="-54" y="-45" width="108" height="90" rx="3"/>
+      <path class="mod" d="M-18 -45 V45 M18 -45 V45"/>
+      <text class="t-s" x="0" y="-31">${esc(d.props.ch)}${esc(d.props.a)}</text>
+      ${[-36, 0, 36].map(x => `<rect class="slot" x="${x - 9}" y="-22" width="18" height="44" rx="3"/>`).join('')}
+      <rect class="lever${on ? ' on' : ''}" x="-43" y="${on ? -20 : 2}" width="86" height="18" rx="2"/>
+      <text class="t-xs st${on ? ' on' : ''}" x="0" y="37">${on ? 'ВКЛ' : 'ОТКЛ'}</text>
+      ${d.state.trip ? '<circle class="trip" cx="46" cy="-38" r="4"/>' : ''}`;
+    },
+    toggle: (d, x, y) => {
+      if (!inRect(x, y, -50, -28, 100, 56)) return false;
       if (d.state.trip) { d.state.trip = false; d.state.on = true; } else d.state.on = !d.state.on;
       return true;
     }

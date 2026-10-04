@@ -22,7 +22,7 @@
   --hot: #E0362C; --lit: #FFC93C; --live: #1E9A52;
   --w-brown: #8A4B22; --w-black: #1C1C1C; --w-white: #FAFAF5; --w-grey: #8B9097;
   --w-red: #D2302A; --w-blue: #2F7BD9; --w-yellow: #E9C31B; --w-green: #2E9E48;
-  --casing: rgba(20, 28, 38, .55);
+  --casing: rgba(20, 28, 38, .55); --k-l2: #1C1C1C;
   --shadow: 0 8px 28px rgba(20, 28, 38, .18);
   color-scheme: light;
 }
@@ -34,7 +34,7 @@
     --dev: #232B35; --dev-line: #B4BECB; --dev-soft: #2C3541; --contact: #CBD3DE;
     --box: rgba(35, 43, 53, .55);
     --w-brown: #B06A3B; --w-black: #0A0A0A; --w-grey: #9AA0A8;
-    --casing: rgba(235, 240, 246, .42);
+    --casing: rgba(235, 240, 246, .42); --k-l2: #5B616B;
     --shadow: 0 8px 28px rgba(0, 0, 0, .45);
     color-scheme: dark;
   }
@@ -46,7 +46,7 @@
   --dev: #232B35; --dev-line: #B4BECB; --dev-soft: #2C3541; --contact: #CBD3DE;
   --box: rgba(35, 43, 53, .55);
   --w-brown: #B06A3B; --w-black: #0A0A0A; --w-grey: #9AA0A8;
-  --casing: rgba(235, 240, 246, .42);
+  --casing: rgba(235, 240, 246, .42); --k-l2: #5B616B;
   --shadow: 0 8px 28px rgba(0, 0, 0, .45);
   color-scheme: dark;
 }
@@ -100,6 +100,7 @@ section { position: fixed; inset: 0; display: flex; flex-direction: column; }
   background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 13px;
   padding: 6px 12px; border-radius: 999px; pointer-events: none; text-align: center; box-shadow: var(--shadow);
 }
+#hint.live { color: #fff; background: var(--hot); border-color: var(--hot); font-weight: 600; }
 .power { border: 1px solid var(--line); background: var(--dev-soft); border-radius: 10px; height: 38px; padding: 0 12px; font-weight: 700; font-size: 13px; letter-spacing: .3px; }
 .power.on { background: var(--hot); border-color: var(--hot); color: #fff; }
 .tools {
@@ -116,6 +117,7 @@ section { position: fixed; inset: 0; display: flex; flex-direction: column; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
   padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; max-height: 50%; overflow: auto;
 }
+@media (min-width: 900px) { #panel { left: auto; right: 12px; top: 12px; bottom: auto; width: 340px; max-height: calc(100% - 24px); } }
 .p-head { display: flex; align-items: center; gap: 2px; margin: -4px -6px -2px 0; }
 .p-head b { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-head .ib { font-size: 18px; color: var(--muted); }
@@ -154,7 +156,7 @@ textarea.inp { resize: vertical; margin-top: 8px; font-size: 13px; }
 .mini { width: 72px; height: 56px; }
 
 #toast {
-  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 112px); transform: translate(-50%, -12px);
+  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 140px); transform: translate(-50%, -12px);
   background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: calc(100% - 32px);
   opacity: 0; pointer-events: none; transition: .2s; z-index: 30; text-align: center;
 }
@@ -172,6 +174,18 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 .bolt { fill: var(--acc); }
 .slot { fill: var(--dev-soft); stroke: var(--dev-line); stroke-width: 1; }
 .lever { fill: var(--dev-line); }
+.lever.on { fill: var(--acc); }
+.st { fill: var(--muted); }
+.st.on { fill: var(--acc); }
+.mod { stroke: var(--dev-line); stroke-width: 1; opacity: .5; }
+.tip { fill: #C98B4F; stroke: var(--dev-line); stroke-width: 1.2; }
+.tip.hot { fill: var(--hot); }
+.badge rect { stroke-width: 1; }
+.badge text { font-size: 10.5px; font-weight: 650; }
+.b-ok rect { fill: var(--lit); stroke: #C98A00; } .b-ok text { fill: #3A2A00; }
+.b-off rect { fill: var(--dev-soft); stroke: var(--line); } .b-off text { fill: var(--muted); }
+.b-warn rect { fill: var(--dev-soft); stroke: var(--acc); } .b-warn text { fill: var(--acc); }
+.b-bad rect { fill: var(--hot); stroke: var(--hot); } .b-bad text { fill: #fff; }
 .trip { fill: var(--hot); }
 .key { fill: transparent; stroke: var(--dev-line); stroke-width: 1; stroke-opacity: .35; }
 .key.on { fill: var(--acc-soft); stroke: var(--acc); stroke-opacity: .7; }
@@ -201,7 +215,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 
 .lead { stroke: var(--dev-line); stroke-width: 1.6; }
 .term { fill: var(--dev); stroke-width: 2.2; }
-.term.k-L { stroke: var(--w-brown); } .term.k-N { stroke: var(--w-blue); } .term.k-PE { stroke: var(--w-green); } .term.k-x { stroke: var(--dev-line); }
+.term.k-L, .term.k-L1 { stroke: var(--w-brown); } .term.k-L2 { stroke: var(--k-l2); } .term.k-L3 { stroke: var(--w-grey); } .term.k-N { stroke: var(--w-blue); } .term.k-PE { stroke: var(--w-green); } .term.k-x { stroke: var(--dev-line); }
 .term.hot { fill: var(--hot); }
 .pend-ring { fill: var(--acc-soft); stroke: var(--acc); stroke-width: 2; animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { stroke-opacity: .3; fill-opacity: .4; } }

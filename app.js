@@ -11,6 +11,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const WIRE_COLORS = [['brown', 'Коричневый'], ['black', 'Чёрный'], ['white', 'Белый'], ['grey', 'Серый'], ['red', 'Красный'], ['blue', 'Голубой'], ['pe', 'Жёлто-зелёный']];
 const SECTIONS = ['1.5', '2.5', '4', '6', '10'];
 const RATINGS = [6, 10, 16, 20, 25, 32, 40, 50, 63];
+const ICON_DEL = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 
 // ---------- хранение ----------
 let db = load();
@@ -213,8 +214,7 @@ $('#btn-power').onclick = () => {
   power = !power;
   if (power) evaluatePower();
   render();
-  if (power && cur.devices.some(d => d.type === 'src')) toast('Питание подано. Нажимай на выключатели');
-  else if (power) toast('На схеме нет ввода 220 В');
+  if (power && !cur.devices.some(d => d.type === 'src' || d.type === 'src3')) toast('На схеме нет ввода: добавь «Ввод 220 В» или «Ввод 380 В»');
 };
 
 // при КЗ выбивает автомат; если автомата нет — снимаем питание целиком
@@ -239,10 +239,13 @@ function evaluatePower() {
 function devSvg(d) {
   const p = PARTS[d.type];
   const h = {};
-  if (sim) for (const t of p.terms(d)) h[t.id] = sim.cls(tkey(d.id, t.id)) === 'L';
-  const s = { lit: !!(sim && sim.lit.has(d.id)), live: !!(sim && sim.live.has(d.id)) };
+  if (sim) for (const t of p.terms(d)) h[t.id] = isHot(sim.cls(tkey(d.id, t.id)));
+  const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
+  const s = { lit: ok && d.type === 'lamp', live: ok && d.type === 'sock' };
   return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
 }
+
+const samePend = (e) => pending && (isFree(pending) ? pending.w === e.w && pending.side === e.side : pending.d === e.d && pending.t === e.t);
 
 // ближайшая точка рамки к клемме (там начинается вывод), shrink — отступ внутрь для подписи
 function edgePoint(d, t, shrink = 0) {
@@ -256,8 +259,8 @@ function termsSvg(d) {
     const [wx, wy] = termPos(d, t);
     const [ex, ey] = edgePoint(d, t);
     const [lx, ly] = rotP(ex, ey, d.rot);
-    const hot = sim && sim.cls(tkey(d.id, t.id)) === 'L';
-    const pend = (pending && pending.d === d.id && pending.t === t.id) || (rubber && rubber.from.d === d.id && rubber.from.t === t.id);
+    const hot = sim && isHot(sim.cls(tkey(d.id, t.id)));
+    const pend = samePend({ d: d.id, t: t.id }) || (rubber && rubber.from.d === d.id && rubber.from.t === t.id);
     out += `<line class="lead" x1="${d.x + lx}" y1="${d.y + ly}" x2="${wx}" y2="${wy}"/>`;
     if (pend) out += `<circle class="pend-ring" cx="${wx}" cy="${wy}" r="11"/>`;
     out += `<circle class="term k-${t.kind}${hot ? ' hot' : ''}" cx="${wx}" cy="${wy}" r="4.5"/>`;
@@ -270,24 +273,50 @@ function termsSvg(d) {
   return out;
 }
 
+// что с лампой или розеткой при поданном питании
+function loadText(d) {
+  const r = sim && sim.loads.get(d.id);
+  if (!r) return null;
+  const three = cur.devices.some(o => o.type === 'src3');
+  const ph = three && r.ph ? ' · ' + r.ph : '';
+  if (r.st === 'ok') return { cls: 'ok', t: (d.type === 'lamp' ? 'горит' : '220 В') + ph };
+  if (r.st === '380') return { cls: 'bad', t: '380 В! Между фазами' };
+  if (r.st === 'nozero') return { cls: 'warn', t: 'нет нуля' + ph };
+  return { cls: 'off', t: 'нет фазы' };
+}
+
 function labelSvg(d) {
   const p = PARTS[d.type];
-  if (p.noLabel || !d.props.label) return '';
-  const b = worldBox(d, true);
-  return `<text class="dlbl" x="${(b[0] + b[2]) / 2}" y="${b[3] + 16}">${esc(d.props.label)}</text>`;
+  const b = worldBox(d, true), cx = (b[0] + b[2]) / 2;
+  let y = b[3] + 16, out = '';
+  if (!p.noLabel && d.props.label) { out += `<text class="dlbl" x="${cx}" y="${y}">${esc(d.props.label)}</text>`; y += 18; }
+  const lt = loadText(d);
+  if (lt) {
+    const w = lt.t.length * 6.4 + 16;
+    out += `<g class="badge b-${lt.cls}"><rect x="${cx - w / 2}" y="${y - 12}" width="${w}" height="17" rx="8.5"/><text x="${cx}" y="${y}">${esc(lt.t)}</text></g>`;
+  }
+  return out;
 }
 
 function wireSvg(w) {
   const P = wirePts(cur, w);
   if (!P) return '';
   const path = 'M' + P.map(p => p.join(' ')).join(' L');
-  const hot = sim && sim.cls(tkey(w.a.d, w.a.t)) === 'L';
+  const k = wireKey(w);
+  const hot = sim && k && isHot(sim.cls(k));
   let s = '';
   if (sel && sel.kind === 'wire' && sel.id === w.id) s += `<path class="w-sel" d="${path}"/>`;
   if (hot) s += `<path class="w-hot" d="${path}"/>`;
   s += `<path class="w-case" d="${path}"/>`;
   if (w.color === 'pe') s += `<path class="w-core" style="stroke:var(--w-yellow)" d="${path}"/><path class="w-core w-stripe" style="stroke:var(--w-green)" d="${path}"/>`;
   else s += `<path class="w-core" style="stroke:var(--w-${w.color})" d="${path}"/>`;
+  // свободный конец: зачищенная жила
+  for (const side of ['a', 'b']) {
+    if (!isFree(w[side])) continue;
+    const [x, y] = side === 'a' ? P[0] : P[P.length - 1];
+    if (samePend({ w: w.id, side })) s += `<circle class="pend-ring" cx="${x}" cy="${y}" r="11"/>`;
+    s += `<circle class="tip${hot ? ' hot' : ''}" cx="${x}" cy="${y}" r="4"/>`;
+  }
   return s;
 }
 
@@ -338,19 +367,27 @@ function render() {
   $('#btn-redo').disabled = !fut.length;
   const pb = $('#btn-power');
   pb.classList.toggle('on', power);
-  pb.textContent = power ? '⚡ ВКЛ' : '⚡ ВЫКЛ';
-  wrap.classList.toggle('powered', power);
+  pb.textContent = power ? '⚡ Снять' : '⚡ Подать';
+  pb.title = power ? 'Снять питание' : 'Подать питание';
   renderHint();
 }
 
 function renderHint() {
-  let h = '';
-  if (pending || rubber) h = 'Теперь нажми на вторую клемму. Отмена: тап по пустому месту';
+  let h = '', st = '';
+  if (power) {
+    const loads = [...sim.loads.entries()].map(([id, r]) => [devById(id).type, r.st]);
+    const cnt = (type) => { const all = loads.filter(l => l[0] === type); return all.length ? `${all.filter(l => l[1] === 'ok').length} из ${all.length}` : null; };
+    const lamps = cnt('lamp'), socks = cnt('sock');
+    st = ['Под напряжением', lamps && 'свет: ' + lamps, socks && 'розетки: ' + socks].filter(Boolean).join(' · ');
+  }
+  if (pending && isFree(pending)) h = 'Теперь нажми на клемму, к которой подключить этот конец';
+  else if (pending || rubber) h = 'Нажми на вторую клемму или внутри коробки. Отмена: тап по пустому месту';
   else if (sel && sel.kind === 'wire') h = 'Тяни кружок на проводе, чтобы изогнуть. Тап по точке изгиба убирает её';
   else if (cur.devices.length <= 1 && !cur.wires.length) h = 'Добавь устройства кнопкой «Устройство». Провод: нажми на клемму, потом на вторую';
-  else if (power) h = 'Под напряжением: нажимай на выключатели и автоматы';
+  else if (!power && cur.wires.length) h = 'Питание снято. Нажми «⚡ Подать» сверху';
   const el = $('#hint');
-  el.textContent = h; el.hidden = !h;
+  el.textContent = st || h; el.hidden = !(st || h);
+  el.classList.toggle('live', !!st);
 }
 
 // ---------- панель свойств ----------
@@ -362,7 +399,7 @@ function renderPanel() {
     const w = wireById(sel.id);
     el.innerHTML = `<div class="p-head"><b>Провод</b>
       ${w.pts && w.pts.length ? '<button class="ib" data-act="straight" title="Выпрямить" aria-label="Выпрямить">⟋</button>' : ''}
-      <button class="ib danger" data-act="del" title="Удалить" aria-label="Удалить">🗑</button><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
+      <button class="ib danger" data-act="del" title="Удалить" aria-label="Удалить">${ICON_DEL}</button><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
       <div class="chips">${WIRE_COLORS.map(([c, n]) => `<button class="sw sw-${c} ${w.color === c ? 'on' : ''}" data-color="${c}" title="${n}" aria-label="${n}"></button>`).join('')}</div>
       <div class="chips">${SECTIONS.map(s => `<button class="chip ${w.sec === s ? 'on' : ''}" data-sec="${s}">${s.replace('.', ',')}</button>`).join('')}<span class="muted unit">мм²</span></div>`;
     return;
@@ -379,7 +416,7 @@ function renderPanel() {
   el.innerHTML = `<div class="p-head"><b>${esc(p.name)}</b>
       ${p.noRotate ? '' : '<button class="ib" data-act="rot" title="Повернуть (R)" aria-label="Повернуть">⟳</button>'}
       <button class="ib" data-act="dup" title="Копия" aria-label="Копия">⧉</button>
-      <button class="ib danger" data-act="del" title="Удалить" aria-label="Удалить">🗑</button><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
+      <button class="ib danger" data-act="del" title="Удалить" aria-label="Удалить">${ICON_DEL}</button><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
     <input class="inp" id="p-label" value="${esc(d.props.label || '')}" placeholder="${d.type === 'text' ? 'Текст' : 'Подпись, например «Кухня»'}" maxlength="40">
     ${extra}`;
   const inp = el.querySelector('#p-label');
@@ -405,7 +442,7 @@ $('#panel').onclick = e => {
     else if (act === 'dup') {
       snapshot();
       const c = JSON.parse(JSON.stringify(d)); c.id = uid(); c.x += 40; c.y += 40;
-      if (c.type === 'brk') c.state = { on: true };
+      if (PARTS[c.type].breaker) c.state = { on: true };
       cur.devices.push(c); sel = { kind: 'dev', id: c.id };
     }
     else if (b.dataset.ch) { snapshot(); d.props.ch = b.dataset.ch; }
@@ -479,30 +516,55 @@ function addDevice(type) {
 }
 
 // ---------- провода ----------
-function guessColor(a, b) {
-  const kinds = netKinds(cur);
-  const all = new Set([...kinds(tkey(a.d, a.t)), ...kinds(tkey(b.d, b.t))]);
+// цвет по тому, что уже есть в узле: PE жёлто-зелёный, N голубой, фазы L1/L2/L3 коричневый/чёрный/серый
+function guessColor(...ends) {
+  const kinds = netKinds(cur), all = new Set();
+  for (const e of ends) if (!isFree(e)) kinds(tkey(e.d, e.t)).forEach(k => all.add(k));
   if (all.has('PE')) return 'pe';
   if (all.has('N')) return 'blue';
-  if (all.has('L')) return 'brown';
+  if (all.has('L2')) return 'black';
+  if (all.has('L3')) return 'grey';
+  if (all.has('L1') || all.has('L')) return 'brown';
   return db.lastColor;
 }
-function guessSec(a, b) {
-  const types = [devById(a.d).type, devById(b.d).type];
+function guessSec(...ends) {
+  const types = ends.filter(e => !isFree(e)).map(e => devById(e.d).type);
   if (types.includes('sock')) return '2.5';
   if (types.some(t => ['lamp', 'sw1', 'sw2', 'swp', 'swx'].includes(t))) return '1.5';
   return db.lastSec;
 }
 
+// b может быть свободным концом { x, y } — провод заведён в коробку
 function makeWire(a, b) {
-  if (a.d === b.d && a.t === b.t) return;
-  const same = w => (w.a.d === a.d && w.a.t === a.t && w.b.d === b.d && w.b.t === b.t) || (w.a.d === b.d && w.a.t === b.t && w.b.d === a.d && w.b.t === a.t);
-  if (cur.wires.some(same)) { toast('Эти клеммы уже соединены'); return; }
+  if (!isFree(b) && a.d === b.d && a.t === b.t) return;
+  const eq = (p, q) => !isFree(p) && !isFree(q) && p.d === q.d && p.t === q.t;
+  if (!isFree(b) && cur.wires.some(w => (eq(w.a, a) && eq(w.b, b)) || (eq(w.a, b) && eq(w.b, a)))) { toast('Эти клеммы уже соединены'); return; }
   snapshot();
   const w = { id: uid(), a, b, color: guessColor(a, b), sec: guessSec(a, b), pts: [] };
   cur.wires.push(w);
   sel = { kind: 'wire', id: w.id };
   touch(); evaluatePower();
+}
+
+// подключить свободный конец провода к клемме
+function attachEnd(ref, term) {
+  const w = wireById(ref.w);
+  if (!w) return;
+  const other = w[ref.side === 'a' ? 'b' : 'a'];
+  if (!isFree(other) && other.d === term.d && other.t === term.t) { toast('Второй конец уже на этой клемме'); return; }
+  snapshot();
+  w[ref.side] = { d: term.d, t: term.t };
+  sel = { kind: 'wire', id: w.id };
+  touch(); evaluatePower();
+}
+
+// коробка, внутри которой точка (для свободных концов)
+function boxAt(x, y) {
+  for (let i = cur.devices.length - 1; i >= 0; i--) {
+    const d = cur.devices[i];
+    if (PARTS[d.type].isBox && Math.hypot(x - d.x, y - d.y) < PARTS.jbox.r(d) - 4) return d;
+  }
+  return null;
 }
 
 // ---------- попадание пальцем ----------
@@ -532,6 +594,11 @@ function hitTest(x, y) {
     if (dd < bd) { bd = dd; best = { kind: 'term', d, t }; }
   }
   if (best) return best;
+  // свободные концы проводов
+  for (const w of cur.wires) for (const side of ['a', 'b']) {
+    const e = w[side];
+    if (isFree(e) && Math.hypot(e.x - x, e.y - y) < Math.max(16 / k, 9)) return { kind: 'end', w, side };
+  }
   // устройства (сверху вниз), кроме коробок
   for (let i = cur.devices.length - 1; i >= 0; i--) {
     const d = cur.devices[i], p = PARTS[d.type];
@@ -607,16 +674,20 @@ cv.addEventListener('pointermove', e => {
 function startDrag(g) {
   const h = g.hit;
   if (h && h.kind === 'term') { g.type = 'wire'; pending = null; rubber = { from: { d: h.d.id, t: h.t.id }, x: g.wx, y: g.wy }; return; }
+  if (h && h.kind === 'end') { g.type = 'end'; pending = null; snapshot(); g.e = h.w[h.side]; g.ref = { w: h.w.id, side: h.side }; return; }
   if (h && h.kind === 'dev') {
     g.type = 'move'; snapshot();
     const d = h.d;
     g.items = [{ d, x: d.x, y: d.y }];
     g.bends = [];
     if (PARTS[d.type].isBox) {
-      // коробка тащит за собой всё, что внутри
-      const r = PARTS.jbox.r(d);
-      for (const o of cur.devices) if (o !== d && !PARTS[o.type].isBox && Math.hypot(o.x - d.x, o.y - d.y) < r) g.items.push({ d: o, x: o.x, y: o.y });
-      for (const w of cur.wires) (w.pts || []).forEach(p => { if (Math.hypot(p[0] - d.x, p[1] - d.y) < r) g.bends.push({ p, x: p[0], y: p[1] }); });
+      // коробка тащит за собой всё, что внутри: устройства, изгибы и свободные концы проводов
+      const r = PARTS.jbox.r(d), inside = (x, y) => Math.hypot(x - d.x, y - d.y) < r;
+      for (const o of cur.devices) if (o !== d && !PARTS[o.type].isBox && inside(o.x, o.y)) g.items.push({ d: o, x: o.x, y: o.y });
+      for (const w of cur.wires) {
+        (w.pts || []).forEach(p => { if (inside(p[0], p[1])) g.bends.push({ p, i0: 0, i1: 1, x: p[0], y: p[1] }); });
+        for (const e of [w.a, w.b]) if (isFree(e) && inside(e.x, e.y)) g.bends.push({ p: e, i0: 'x', i1: 'y', x: e.x, y: e.y });
+      }
     }
     return;
   }
@@ -638,9 +709,11 @@ function dragMove(g, px, py, wx, wy) {
   } else if (g.type === 'move') {
     const dx = snap(wx - g.wx), dy = snap(wy - g.wy);
     for (const it of g.items) { it.d.x = it.x + dx; it.d.y = it.y + dy; }
-    for (const b of g.bends) { b.p[0] = b.x + dx; b.p[1] = b.y + dy; }
+    for (const b of g.bends) { b.p[b.i0] = b.x + dx; b.p[b.i1] = b.y + dy; }
   } else if (g.type === 'bend') {
     g.w.pts[g.bi] = [snap(wx), snap(wy)];
+  } else if (g.type === 'end') {
+    g.e.x = snap(wx); g.e.y = snap(wy);
   } else if (g.type === 'wire') {
     rubber.x = wx; rubber.y = wy;
   }
@@ -659,13 +732,27 @@ function endPointer(e) {
   if (gest.type === 'none') { if (!ptrs.size) gest = null; return; }
   const g = gest; gest = null;
   if (e.type === 'pointercancel') { rubber = null; render(); return; }
-  if (!g.moved) { tap(g.hit); return; }
+  if (!g.moved) { tap(g.hit, g.wx, g.wy); return; }
   if (g.type === 'wire') {
     const [px, py] = canvasXY(e), [wx, wy] = toWorld(px, py);
     const h = hitTest(wx, wy);
     const from = rubber.from;
     rubber = null;
     if (h && h.kind === 'term') makeWire(from, { d: h.d.id, t: h.t.id });
+    else if (h && h.kind === 'end') attachEnd({ w: h.w.id, side: h.side }, from);
+    else if (boxAt(wx, wy)) makeWire(from, { x: snap(wx), y: snap(wy) });
+    render(); renderPanel();
+    return;
+  }
+  if (g.type === 'end') {
+    // отпустили конец на клемме — подключаем
+    const [px, py] = canvasXY(e), [wx, wy] = toWorld(px, py);
+    let best = null, bd = Math.max(16 / view.k, 9);
+    for (const d of cur.devices) for (const t of termsOf(d)) {
+      const [tx, ty] = termPos(d, t), dd = Math.hypot(tx - wx, ty - wy);
+      if (dd < bd) { bd = dd; best = { d: d.id, t: t.id }; }
+    }
+    if (best) attachEnd(g.ref, best); else touch();
     render(); renderPanel();
     return;
   }
@@ -679,13 +766,27 @@ cv.addEventListener('pointercancel', endPointer);
 
 function saveView() { if (cur) { cur.view = { ...view }; save(); } }
 
-function tap(h) {
-  if (!h) { sel = null; pending = null; render(); renderPanel(); return; }
+function tap(h, wx, wy) {
+  if (!h) {
+    // провод от клеммы можно оставить концом внутри коробки
+    if (pending && !isFree(pending) && boxAt(wx, wy)) { const from = pending; pending = null; makeWire(from, { x: snap(wx), y: snap(wy) }); }
+    else { sel = null; pending = null; }
+    render(); renderPanel(); return;
+  }
   if (h.kind === 'term') {
     const t = { d: h.d.id, t: h.t.id };
-    if (pending && !(pending.d === t.d && pending.t === t.t)) { const from = pending; pending = null; makeWire(from, t); }
+    if (pending && isFree(pending)) { const ref = pending; pending = null; attachEnd(ref, t); }
+    else if (pending && !(pending.d === t.d && pending.t === t.t)) { const from = pending; pending = null; makeWire(from, t); }
     else if (pending) pending = null;
     else { pending = t; sel = null; }
+    render(); renderPanel();
+    return;
+  }
+  if (h.kind === 'end') {
+    const ref = { w: h.w.id, side: h.side };
+    if (pending && !isFree(pending)) { const t = pending; pending = null; attachEnd(ref, t); }
+    else if (samePend(ref)) pending = null;
+    else { pending = ref; sel = null; }
     render(); renderPanel();
     return;
   }
@@ -697,7 +798,10 @@ function tap(h) {
   if (h.kind === 'mid' || h.kind === 'wire') { sel = { kind: 'wire', id: h.w.id }; render(); renderPanel(); return; }
   if (h.kind === 'dev') {
     const d = h.d, p = PARTS[d.type];
-    if (p.toggle && p.toggle(d, h.lx, h.ly)) { touch(); evaluatePower(); }
+    if (p.toggle && p.toggle(d, h.lx, h.ly)) {
+      touch(); evaluatePower();
+      if (!power) toast('Питание снято. Чтобы проверить, нажми «⚡ Подать» сверху');
+    }
     sel = { kind: 'dev', id: d.id };
     render(); renderPanel();
   }
