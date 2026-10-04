@@ -67,20 +67,21 @@ function appliance(name, w, icon) {
     conn: () => [],
     draw: (d, h, s) => `<rect class="body${s.on ? ' run' : ''}" x="-35" y="-36" width="70" height="62" rx="6"/>
       <g class="ico${s.on ? ' on' : ''}">${icon}</g>
-      <text class="t-xs" x="0" y="20">${fmtW(d.props.w)}</text>
+      <text class="t-xs" x="0" y="20">${d.props.area != null ? String(d.props.area).replace('.', ',') + ' м² · ' : ''}${fmtW(d.props.w)}</text>
       <rect class="strip" x="-35" y="26" width="70" height="10" rx="2"/>`
   };
 }
 
-// модуль на DIN-рейку с фазой на входе и выходе и нулём для питания: реле напряжения, таймер, Wi-Fi реле
+// модуль на DIN-рейку (ширина модуля 36) с фазой на входе и выходе и нулём для питания: реле напряжения, Wi-Fi реле
 function module1(name, title, icon, switchable) {
   return {
-    name, group: 'Щит и питание',
+    name, group: 'Щит и питание', din: true,
     init: { state: { on: true } },
-    box: () => [-20, -45, 40, 90],
+    box: () => [-18, -45, 36, 90],
     terms: () => [T('L', -10, -55, 'x', 'L'), T('N', 10, -55, 'N', 'N'), T('out', -10, 55, 'x', '')],
     conn: d => (d.state.on ? [['L', 'out']] : []),
-    draw: d => `<rect class="body" x="-20" y="-45" width="40" height="90" rx="3"/>
+    closed: () => [['L', 'out']],
+    draw: d => `<rect class="body" x="-18" y="-45" width="36" height="90" rx="3"/>
       <text class="t-xs" x="0" y="-22">${title}</text>
       <g class="ico">${icon}</g>
       <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="37">${d.state.on ? 'ВКЛ' : 'ОТКЛ'}</text>`,
@@ -88,7 +89,44 @@ function module1(name, title, icon, switchable) {
   };
 }
 
+// датчик вне щита с тремя проводами: фаза, ноль, нагрузка (Н) — фотореле, датчик движения
+function sensor(name, icons, words) {
+  return {
+    name, group: 'Свет и розетки',
+    init: { state: { on: false } },
+    box: () => [-30, -32, 60, 64],
+    terms: () => [T('L', -20, 42, 'x', 'L'), T('N', 0, 42, 'N', 'N'), T('out', 20, 42, 'x', 'Н')],
+    conn: d => (d.state.on ? [['L', 'out']] : []),
+    closed: () => [['L', 'out']],
+    draw: d => `<rect class="body" x="-26" y="-32" width="52" height="54" rx="12"/>
+      <g class="ico${d.state.on ? ' on' : ''}">${icons[d.state.on ? 1 : 0]}</g>
+      <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="16">${words[d.state.on ? 1 : 0]}</text>
+      <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`,
+    toggle: d => { d.state.on = !d.state.on; return true; }
+  };
+}
+
+// щиток: корпус с DIN-рейками; модуль = 36, ряд = 150
+const MOD = 36, ROW = 150;
+const shieldSize = d => [d.props.mods * MOD + 60, d.props.rows * ROW + 40];
+const shieldRails = d => { const [, H] = shieldSize(d); return Array.from({ length: d.props.rows }, (_, i) => -H / 2 + 40 + i * ROW + ROW / 2 - 10); };
+
 const PARTS = {
+  shield: {
+    name: 'Щиток', group: 'Щит и питание', isBox: true, shape: 'rect', noRotate: true, noLabel: true,
+    init: { props: { rows: 2, mods: 12 } },
+    box: d => { const [W, H] = shieldSize(d); return [-W / 2, -H / 2, W, H]; },
+    terms: () => [],
+    conn: () => [],
+    draw: d => {
+      const [W, H] = shieldSize(d);
+      return `<rect class="shield" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" rx="10"/>
+      <rect class="shield-in" x="${-W / 2 + 8}" y="${-H / 2 + 8}" width="${W - 16}" height="${H - 16}" rx="6"/>
+      ${shieldRails(d).map(y => `<rect class="rail" x="${-W / 2 + 20}" y="${y - 12}" width="${W - 40}" height="24" rx="2"/>`).join('')}
+      <text class="t-s jl" x="${-W / 2 + 22}" y="${-H / 2 + 28}" text-anchor="start" style="text-anchor:start">${esc(d.props.label || 'Щиток')} · ${d.props.rows}×${d.props.mods} мод.</text>`;
+    }
+  },
+
   src: {
     name: 'Ввод 220 В', group: 'Щит и питание',
     box: () => [-60, -30, 120, 60],
@@ -110,12 +148,13 @@ const PARTS = {
   },
 
   brk: {
-    name: 'Автомат 1P', group: 'Щит и питание', breaker: true,
+    name: 'Автомат 1P', group: 'Щит и питание', breaker: true, din: true,
     poles: [['1', '2']],
     init: { state: { on: true }, props: { ch: 'C', a: 16 } },
     box: () => [-18, -45, 36, 90],
     terms: () => [T('1', 0, -55, 'x', ''), T('2', 0, 55, 'x', '')],
     conn: d => (d.state.on ? [['1', '2']].filter(g => g[0] !== d.state.cut) : []),
+    closed: d => [['1', '2']].filter(g => g[0] !== d.state.cut),
     draw: d => {
       const on = d.state.on;
       return `<rect class="body" x="-18" y="-45" width="36" height="90" rx="3"/>
@@ -133,12 +172,13 @@ const PARTS = {
   },
 
   brk3: {
-    name: 'Автомат 3P', group: 'Щит и питание', breaker: true,
+    name: 'Автомат 3P', group: 'Щит и питание', breaker: true, din: true,
     poles: [['1', '2'], ['3', '4'], ['5', '6']],
     init: { state: { on: true }, props: { ch: 'C', a: 25 } },
     box: () => [-54, -45, 108, 90],
     terms: () => [T('1', -36, -55, 'x', ''), T('3', 0, -55, 'x', ''), T('5', 36, -55, 'x', ''), T('2', -36, 55, 'x', ''), T('4', 0, 55, 'x', ''), T('6', 36, 55, 'x', '')],
     conn: d => (d.state.on ? [['1', '2'], ['3', '4'], ['5', '6']].filter(g => g[0] !== d.state.cut) : []),
+    closed: d => [['1', '2'], ['3', '4'], ['5', '6']].filter(g => g[0] !== d.state.cut),
     draw: d => {
       const on = d.state.on;
       return `<rect class="body" x="-54" y="-45" width="108" height="90" rx="3"/>
@@ -158,11 +198,12 @@ const PARTS = {
 
   // УЗО 2P: срабатывает, если ток ушёл мимо его нуля (через PE или ноль другой группы)
   rcd: {
-    name: 'УЗО 2P', group: 'Щит и питание', rcd: true,
+    name: 'УЗО 2P', group: 'Щит и питание', rcd: true, din: true,
     init: { state: { on: true }, props: { ma: 30, a: 40 } },
     box: () => [-36, -45, 72, 90],
     terms: () => [T('1', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('2', -20, 55, 'x', ''), T('N2', 20, 55, 'N', '')],
     conn: d => (d.state.on ? [!d.state.cutL && ['1', '2'], !d.state.cutN && ['N', 'N2']].filter(Boolean) : []),
+    closed: d => [!d.state.cutL && ['1', '2'], !d.state.cutN && ['N', 'N2']].filter(Boolean),
     draw: d => {
       const on = d.state.on;
       return `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
@@ -182,8 +223,27 @@ const PARTS = {
   },
 
   rn: module1('Реле напряжения', 'РН', '<rect class="disp" x="-14" y="-12" width="28" height="16" rx="2"/><text class="t-xs disp-t" x="0" y="-1">220</text>', false),
-  tmr: module1('Таймер', 'ТАЙМЕР', '<circle cx="0" cy="-2" r="11"/><path d="M0 -9 V-2 L5 2"/>', true),
   wifi: module1('Wi-Fi реле', 'Wi-Fi', '<path d="M-11 -6 a16 16 0 0 1 22 0 M-7 -1 a10 10 0 0 1 14 0 M-3 4 a4 4 0 0 1 6 0"/><circle cx="0" cy="8" r="1.6"/>', true),
+
+  // цифровой таймер на 2 модуля, как в щите пользователя: экран со временем, кнопки, индикатор ВКЛ
+  tmr: {
+    name: 'Таймер', group: 'Щит и питание', din: true,
+    init: { state: { on: true } },
+    box: () => [-36, -45, 72, 90],
+    terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('out', -20, 55, 'x', '')],
+    conn: d => (d.state.on ? [['L', 'out']] : []),
+    closed: () => [['L', 'out']],
+    draw: d => {
+      const t = new Date(), hm = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+      return `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
+      <circle class="led${d.state.on ? ' on' : ''}" cx="-26" cy="-32" r="3"/><text class="t-xs" x="-12" y="-29">ВКЛ</text>
+      <rect class="lcd" x="-28" y="-24" width="56" height="20" rx="2"/><text class="lcd-t" x="0" y="-9">${hm}</text>
+      ${[-22, -7, 8, 23].map(x => `<rect class="kbtn" x="${x - 5}" y="2" width="10" height="7" rx="1.5"/>`).join('')}
+      <rect class="kbtn" x="-27" y="15" width="22" height="7" rx="1.5"/><rect class="kbtn" x="5" y="15" width="22" height="7" rx="1.5"/>
+      <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="37">${d.state.on ? 'ВКЛ' : 'ОТКЛ'}</text>`;
+    },
+    toggle: d => { d.state.on = !d.state.on; return true; }
+  },
 
   busN: bus('N'),
   busPE: bus('PE'),
@@ -194,6 +254,7 @@ const PARTS = {
     box: () => [-35, -35, 70, 70],
     terms: () => [T('L', 0, -45, 'x', 'L', 9), T('1', 0, 45, 'x', '1', 9)],
     conn: d => (d.state.on ? [['L', '1']] : []),
+    closed: () => [['L', '1']],
     draw: (d, h) => {
       const on = d.state.on;
       return `<rect class="body" x="-35" y="-35" width="70" height="70" rx="9"/>
@@ -212,6 +273,7 @@ const PARTS = {
     box: () => [-45, -35, 90, 70],
     terms: () => [T('L', 0, -45, 'x', 'L', 9), T('1', -20, 45, 'x', '1', 9), T('2', 20, 45, 'x', '2', 9)],
     conn: d => [d.state.k1 && ['L', '1'], d.state.k2 && ['L', '2']].filter(Boolean),
+    closed: () => [['L', '1', '2']],
     draw: (d, h) => {
       const { k1, k2 } = d.state, hl = hc(h, 'L');
       const one = (x, on, id) => `${on ? blade(x, -12, x, 12, hl) : blade(x, -12, x + 13, 8, hl)}
@@ -231,6 +293,7 @@ const PARTS = {
     box: () => [-35, -35, 70, 70],
     terms: () => [T('L', 0, -45, 'x', 'L', 9), T('1', -20, 45, 'x', '1', 9), T('2', 20, 45, 'x', '2', 9)],
     conn: d => [['L', d.state.pos ? '2' : '1']],
+    closed: () => [['L', '1', '2']],
     draw: (d, h) => {
       const p = d.state.pos, hl = hc(h, 'L');
       return `<rect class="body" x="-35" y="-35" width="70" height="70" rx="9"/>
@@ -249,6 +312,7 @@ const PARTS = {
     box: () => [-35, -35, 70, 70],
     terms: () => [T('1', -20, -45, 'x', '1', 9), T('2', 20, -45, 'x', '2', 9), T('3', -20, 45, 'x', '3', 9), T('4', 20, 45, 'x', '4', 9)],
     conn: d => (d.state.x ? [['1', '4'], ['2', '3']] : [['1', '3'], ['2', '4']]),
+    closed: () => [['1', '2', '3', '4']],
     draw: (d, h) => {
       const x = d.state.x;
       return `<rect class="body" x="-35" y="-35" width="70" height="70" rx="9"/>
@@ -263,7 +327,7 @@ const PARTS = {
   },
 
   lamp: {
-    name: 'Лампа', group: 'Свет и розетки', load: true,
+    name: 'Лампа', group: 'Свет и розетки', load: true, light: true,
     init: { props: { w: 100 } },
     box: () => [-30, -32, 60, 64],
     terms: () => [T('L', -20, 42, 'L'), T('N', 0, 42, 'N'), T('PE', 20, 42, 'PE')],
@@ -273,6 +337,28 @@ const PARTS = {
       <path class="bx" d="M-15.5 -21.5 L15.5 9.5 M15.5 -21.5 L-15.5 9.5"/>
       <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`
   },
+
+  flood: {
+    name: 'Прожектор', group: 'Свет и розетки', load: true, light: true,
+    init: { props: { w: 50 } },
+    box: () => [-30, -32, 60, 64],
+    terms: () => LNPE(42),
+    conn: () => [],
+    draw: (d, h, s) => `${s.lit ? '<path class="beam" d="M-24 -30 L-46 -60 H46 L24 -30Z"/>' : ''}
+      <path class="body" d="M-26 -30 H26 L22 6 H-22 Z"/>
+      <rect class="bulb${s.lit ? ' lit' : ''}" x="-20" y="-25" width="40" height="24" rx="2"/>
+      <path class="bx" d="M0 6 V14 M-12 14 H12"/>
+      <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`
+  },
+
+  photo: sensor('Фотореле', [
+    '<circle cx="0" cy="-12" r="7"/><path d="M0 -26 v4 M0 -2 v4 M-14 -12 h4 M10 -12 h4 M-10 -22 l3 3 M7 -5 l3 3 M10 -22 l-3 3 M-7 -5 l-3 3"/>',
+    '<path d="M4 -25 a12 12 0 1 0 6 20 a10 10 0 0 1 -6 -20Z"/>'
+  ], ['день', 'ночь']),
+  motion: sensor('Датчик движения', [
+    '<path d="M-12 -4 a12 12 0 0 1 24 0 Z"/>',
+    '<path d="M-12 -4 a12 12 0 0 1 24 0 Z M-18 -14 a20 20 0 0 1 8 -10 M18 -14 a20 20 0 0 0 -8 -10"/>'
+  ], ['нет', 'движение']),
 
   sock: socket(false),
   sockIP: socket(true),
@@ -288,7 +374,7 @@ const PARTS = {
   boiler: appliance('Водонагреватель', 2000, '<rect x="-14" y="-30" width="28" height="38" rx="10"/><path d="M0 -21 c-6 8 -6 12 0 12 c6 0 6 -4 0 -12Z"/>'),
   ac: appliance('Кондиционер', 1500, '<rect x="-24" y="-26" width="48" height="20" rx="4"/><path d="M-18 -11 H18 M-12 -2 l-3 6 M0 -2 v7 M12 -2 l3 6"/>'),
   hood: appliance('Вытяжка', 200, '<path d="M-6 -30 h12 v10 l14 12 h-40 l14 -12 Z"/><path d="M-12 -2 v5 M0 -2 v5 M12 -2 v5"/>'),
-  floor: appliance('Тёплый пол', 1500, '<path d="M-20 -27 H14 a4 4 0 0 1 0 8 H-14 a4 4 0 0 0 0 8 H14 a4 4 0 0 1 0 8 H-20"/>'),
+  floor: appliance('Тёплый пол', 1100, '<path d="M-20 -27 H14 a4 4 0 0 1 0 8 H-14 a4 4 0 0 0 0 8 H14 a4 4 0 0 1 0 8 H-20"/>'),
   pump: appliance('Насос', 750, '<circle cx="0" cy="-11" r="16"/><path d="M-8 -25 L16 -11 L-8 3"/>'),
   heat: appliance('Прогрев труб', 300, '<path d="M-24 -20 H24 M-24 -2 H24"/><path d="M-20 -11 q4 -6 8 0 t8 0 t8 0 t8 0 t8 0"/>'),
   fan: appliance('Вентиляция', 100, '<circle cx="0" cy="-11" r="17"/><path d="M0 -11 c-2 -8 4 -12 8 -9 c-2 4 -4 7 -8 9 Z M0 -11 c8 -2 12 4 9 8 c-4 -2 -7 -4 -9 -8 Z M0 -11 c-6 6 -13 2 -12 -3 c4 0 8 0 12 3 Z"/>'),
@@ -329,5 +415,8 @@ const PARTS = {
     draw: d => `<text class="t-l" x="0" y="5">${esc(d.props.label)}</text>`
   }
 };
+
+// тёплый пол считаем по площади: Вт = м² × Вт/м² (ИК-плёнка 150 или 220, маты 150–160)
+PARTS.floor.init = { props: { w: 1100, area: 5, wpm: 220 } };
 
 const GROUPS = ['Щит и питание', 'Выключатели', 'Свет и розетки', 'Техника', 'Монтаж'];

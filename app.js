@@ -176,6 +176,8 @@ let rubber = null;            // провод, который тянут пал�
 let power = false;
 let sim = null;
 let hist = [], fut = [];
+let issues = [], issuesSig = '', showIssues = false; // проверка по ПУЭ
+let meter = null;             // мультиметр: { a, b } — точки щупов (клемма {d,t} или конец провода {w,side})
 
 const devById = id => cur.devices.find(d => d.id === id);
 const wireById = id => cur.wires.find(w => w.id === id);
@@ -183,6 +185,7 @@ const wireById = id => cur.wires.find(w => w.id === id);
 function openScheme(id) {
   cur = db.schemes.find(s => s.id === id);
   hist = []; fut = []; sel = null; pending = null; rubber = null; power = false;
+  showIssues = false; meter = null; issuesSig = '';
   $('#scr-list').hidden = true; $('#scr-ed').hidden = false;
   $('#ed-name').textContent = cur.name;
   requestAnimationFrame(() => {
@@ -261,7 +264,7 @@ function devSvg(d) {
   const h = {};
   if (sim) for (const t of p.terms(d)) h[t.id] = isHot(sim.cls(tkey(d.id, t.id)));
   const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
-  const s = { lit: ok && d.type === 'lamp', live: ok && d.type.startsWith('sock'), on: ok };
+  const s = { lit: ok && !!PARTS[d.type].light, live: ok && d.type.startsWith('sock'), on: ok };
   return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
 }
 
@@ -313,7 +316,7 @@ function loadText(d) {
   const three = cur.devices.some(o => o.type === 'src3');
   const ph = three && r.ph ? ' · ' + r.ph : '';
   const sockW = d.type.startsWith('sock') && loadW(d) ? ' · ' + fmtW(loadW(d)) : '';
-  if (r.st === 'ok') return { cls: 'ok', t: (d.type === 'lamp' ? 'горит' : d.type.startsWith('sock') ? '220 В' + sockW : 'работает') + ph };
+  if (r.st === 'ok') return { cls: 'ok', t: (PARTS[d.type].light ? 'горит' : d.type.startsWith('sock') ? '220 В' + sockW : 'работает') + ph };
   if (r.st === '380') return { cls: 'bad', t: '380 В! Между фазами' };
   if (r.st === 'nozero') return { cls: 'warn', t: 'нет нуля' + ph };
   return { cls: 'off', t: 'нет фазы' };
@@ -392,6 +395,9 @@ function render() {
     const fd = devById(rubber.from.d), ft = fd && termsOf(fd).find(t => t.id === rubber.from.t);
     if (ft) { const [x, y] = termPos(fd, ft); out.push(`<line class="rubber" x1="${x}" y1="${y}" x2="${rubber.x}" y2="${rubber.y}"/>`); }
   }
+  updateIssues();
+  if (showIssues) out.push(marksSvg());
+  if (meter) out.push(probesSvg());
   world.innerHTML = out.join('');
   world.setAttribute('transform', `translate(${-view.x * view.k} ${-view.y * view.k}) scale(${view.k})`);
 
@@ -406,13 +412,133 @@ function render() {
   pb.classList.toggle('on', power);
   pb.textContent = power ? '⚡ Снять' : '⚡ Подать';
   pb.title = power ? 'Снять питание' : 'Подать питание';
+  const errs = issues.filter(i => i.lvl === 'err').length, warns = issues.length - errs;
+  const cb = $('#btn-check');
+  cb.textContent = issues.length ? `⚠ ${issues.length}` : '✓';
+  cb.className = 'tb chk' + (errs ? ' err' : warns ? ' warn' : '') + (showIssues ? ' on' : '');
+  cb.title = issues.length ? `Проверка по ПУЭ: ошибок ${errs}, замечаний ${warns}` : 'Проверка по ПУЭ: замечаний нет';
+  $('#btn-meter').classList.toggle('on', !!meter);
   renderHint();
+  renderMeter();
+  if (showIssues) renderIssues();
+}
+
+// ---------- проверка по ПУЭ ----------
+// пересчитываем, только когда изменилось что-то кроме положения устройств на поле
+function updateIssues() {
+  const sig = JSON.stringify([power, cur.devices.map(d => [d.id, d.type, d.state, d.props, PARTS[d.type].isBox || d.type === 'twist' || d.type.startsWith('wago') ? [d.x, d.y] : 0]),
+    cur.wires.map(w => [w.a, w.b, w.color, w.sec])]);
+  if (sig === issuesSig) return;
+  issuesSig = sig;
+  issues = checkScheme(cur, power);
+}
+
+function targetPoint(t) {
+  if (t.kind === 'dev') { const d = devById(t.id); if (!d) return null; const b = worldBox(d); return [(b[0] + b[2]) / 2, b[1]]; }
+  const w = wireById(t.id), P = w && wirePts(cur, w);
+  if (!P) return null;
+  const i = Math.floor((P.length - 1) / 2);
+  return [(P[i][0] + P[i + 1][0]) / 2, (P[i][1] + P[i + 1][1]) / 2];
+}
+
+function marksSvg() {
+  const r = 1 / view.k, seen = new Set();
+  let s = '';
+  for (const is of issues) for (const t of is.targets) {
+    const key = t.kind + t.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const p = targetPoint(t);
+    if (p) s += `<g class="mark m-${is.lvl}" transform="translate(${p[0]} ${p[1]}) scale(${r})"><circle r="10"/><text y="5" font-size="14">!</text></g>`;
+  }
+  return s;
+}
+
+function renderIssues() {
+  const el = $('#issues');
+  el.innerHTML = `<div class="p-head"><b>Проверка по ПУЭ</b><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
+    ${issues.length ? `<div class="iss-list">${issues.map((is, i) => `<button class="iss ${is.lvl}" data-i="${i}">
+      <span class="iss-dot">!</span><span class="iss-t">${esc(is.text)}${is.pue ? `<br><span class="iss-p">ПУЭ ${esc(is.pue)}</span>` : ''}</span></button>`).join('')}</div>`
+    : '<p class="muted">Ошибок не нашёл. Проверяю: фазу в выключателе, автомат и сечение провода, ток по проводам, цвета жил, N и PE, землю у розеток и техники, УЗО на розетках, соединения в коробках, свободные концы.</p>'}
+    ${power ? '' : '<p class="p-note">Ток по проводам проверяется, когда питание подано.</p>'}`;
+}
+
+$('#btn-check').onclick = () => {
+  showIssues = !showIssues;
+  if (showIssues) { sel = null; pending = null; }
+  $('#issues').hidden = !showIssues;
+  render(); renderPanel();
+};
+
+$('#issues').onclick = e => {
+  if (e.target.closest('[data-act=close]')) { showIssues = false; $('#issues').hidden = true; render(); return; }
+  const b = e.target.closest('[data-i]');
+  if (!b) return;
+  const is = issues[+b.dataset.i], t = is && is.targets[0];
+  if (!t) return;
+  // показываем место ошибки в центре экрана
+  const p = targetPoint(t), r = cv.getBoundingClientRect();
+  if (p) { view.x = p[0] - r.width / 2 / view.k; view.y = p[1] - r.height / 3 / view.k; saveView(); }
+  sel = { kind: t.kind, id: t.id };
+  render();
+};
+
+// ---------- мультиметр ----------
+$('#btn-meter').onclick = () => {
+  meter = meter ? null : { a: null, b: null };
+  pending = null; rubber = null;
+  render();
+};
+
+const ptPos = pt => (pt.w ? endPos(cur, wireById(pt.w)[pt.side]) : termPos(devById(pt.d), termsOf(devById(pt.d)).find(t => t.id === pt.t)));
+const ptKey = pt => (pt.w ? wireKey(wireById(pt.w)) : tkey(pt.d, pt.t));
+const ptValid = pt => (pt.w ? !!wireById(pt.w) : !!devById(pt.d));
+
+function probesSvg() {
+  const r = 1 / view.k;
+  let s = '';
+  for (const [pt, c, t] of [[meter.a, 'red', 'V'], [meter.b, 'black', 'COM']]) {
+    if (!pt || !ptValid(pt)) continue;
+    const [x, y] = ptPos(pt);
+    s += `<g class="probe ${c}" transform="translate(${x} ${y}) scale(${r})"><circle r="11"/><text y="3">${t}</text></g>`;
+  }
+  return s;
+}
+
+// что покажет прибор
+function meterReading() {
+  const { a, b } = meter;
+  if (!a || !b || !ptValid(a) || !ptValid(b)) return null;
+  const ka = ptKey(a), kb = ptKey(b);
+  if (power) {
+    const s = simulate(cur), ca = ka && s.cls(ka), cb = kb && s.cls(kb);
+    const zero = c => c === 'N' || c === 'PE';
+    if (isHot(ca) && isHot(cb)) return ca === cb ? { v: '0 В', t: `Одна и та же фаза ${ca}` } : { v: '380 В', t: `Между фазами ${ca} и ${cb}` };
+    if ((isHot(ca) && zero(cb)) || (isHot(cb) && zero(ca))) return { v: '220 В', t: `Фаза ${isHot(ca) ? ca : cb} и ${zero(ca) ? ca : cb}` };
+    if (isHot(ca) || isHot(cb)) return { v: '0 В', t: 'Один щуп на фазе, второй ни к чему не подключён' };
+    return { v: '0 В', t: 'Напряжения нет' };
+  }
+  const find = nets(cur);
+  const same = ka && kb && find(ka) === find(kb);
+  return same ? { v: '0,0 Ом', t: 'Звонится: точки соединены' } : { v: 'OL', t: 'Обрыв: точки не соединены' };
+}
+
+function renderMeter() {
+  const el = $('#meter');
+  el.hidden = !meter;
+  if (!meter) return;
+  $('#hint').hidden = true;
+  const r = meterReading();
+  const mode = power ? '~V  напряжение' : 'Ω  прозвонка (питание снято)';
+  const lcd = r ? r.v : '- - -';
+  const sub = r ? r.t : !meter.a ? 'Нажми на первую точку (красный щуп)' : 'Теперь на вторую точку (чёрный щуп)';
+  el.innerHTML = `<div class="m-sub" style="margin:0 0 6px">${mode}</div><div class="m-lcd">${esc(lcd)}</div><div class="m-sub">${esc(sub)}</div>`;
 }
 
 function renderHint() {
   let h = '', st = '';
   if (power) {
-    const kind = t => (t === 'lamp' ? 'lamp' : t.startsWith('sock') ? 'sock' : 'app');
+    const kind = t => (PARTS[t].light ? 'lamp' : t.startsWith('sock') ? 'sock' : 'app');
     const loads = [...sim.loads.entries()].map(([id, r]) => [kind(devById(id).type), r.st]);
     const cnt = (k) => { const all = loads.filter(l => l[0] === k); return all.length ? `${all.filter(l => l[1] === 'ok').length} из ${all.length}` : null; };
     const lamps = cnt('lamp'), socks = cnt('sock'), apps = cnt('app');
@@ -431,11 +557,16 @@ function renderHint() {
 // ---------- панель свойств ----------
 function renderPanel() {
   const el = $('#panel');
-  if (!sel) { el.hidden = true; el.innerHTML = ''; return; }
+  if (!sel || showIssues) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
   if (sel.kind === 'wire') {
     const w = wireById(sel.id);
-    el.innerHTML = `<div class="p-head"><b>Провод</b>
+    let amps = '';
+    if (power) {
+      const s = simulate(cur), I = s.short ? 0 : (wireCurrents(cur, s).get(w.id) || 0), lim = IDOP[w.sec];
+      amps = `<span class="muted" style="font-weight:600;${I > lim ? 'color:var(--hot)' : ''}">${fmtA(I)} из ${lim} А</span>`;
+    }
+    el.innerHTML = `<div class="p-head"><b>Провод</b>${amps}
       ${w.pts && w.pts.length ? '<button class="ib" data-act="straight" title="Выпрямить" aria-label="Выпрямить">⟋</button>' : ''}
       <button class="ib danger" data-act="del" title="Удалить" aria-label="Удалить">${ICON_DEL}</button><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
       <div class="chips">${WIRE_COLORS.map(([c, n]) => `<button class="sw sw-${c} ${w.color === c ? 'on' : ''}" data-color="${c}" title="${n}" aria-label="${n}"></button>`).join('')}</div>
@@ -452,8 +583,20 @@ function renderPanel() {
     extra = `<div class="chips">${[10, 30, 100, 300].map(m => `<button class="chip ${d.props.ma === m ? 'on' : ''}" data-ma="${m}">${m}</button>`).join('')}<span class="muted unit">мА</span>
       <span class="sep"></span>${[25, 40, 63].map(a => `<button class="chip ${d.props.a === a ? 'on' : ''}" data-a="${a}">${a}</button>`).join('')}<span class="muted unit">А</span></div>`;
   }
-  if (p.load) {
+  if (p.load && d.type !== 'floor') {
     extra = `<label class="row-in"><span class="muted">${d.type.startsWith('sock') ? 'Включено в розетку, Вт' : 'Мощность, Вт'}</span><input class="inp" id="p-w" type="number" inputmode="numeric" min="0" step="100" value="${loadW(d)}"></label>`;
+  }
+  if (d.type === 'floor') {
+    if (d.props.area == null) { d.props.area = Math.round(loadW(d) / 150 * 10) / 10; d.props.wpm = 150; }
+    extra = `<label class="row-in"><span class="muted">Уложено, м²</span><input class="inp" id="p-area" type="number" inputmode="decimal" min="0" step="0.5" value="${d.props.area}"></label>
+      <div class="chips"><span class="muted unit">Вт/м²</span>${[150, 220].map(v => `<button class="chip ${d.props.wpm === v ? 'on' : ''}" data-wpm="${v}">${v}</button>`).join('')}
+      <input class="inp chip-in" id="p-wpm" type="number" inputmode="numeric" min="0" step="10" value="${d.props.wpm}" title="Своё значение, Вт/м²"></div>
+      <div class="p-note"><b id="p-total">Итого ${fmtW(loadW(d))}</b>. ИК-плёнка обычно 150 или 220 Вт/м², маты под плитку 150–160. Смотри маркировку.</div>`;
+  }
+  if (d.type === 'shield') {
+    extra = `<div class="chips"><span class="muted unit">Рядов</span>${[1, 2, 3, 4].map(v => `<button class="chip ${d.props.rows === v ? 'on' : ''}" data-rows="${v}">${v}</button>`).join('')}</div>
+      <div class="chips"><span class="muted unit">Модулей в ряду</span>${[12, 18, 24].map(v => `<button class="chip ${d.props.mods === v ? 'on' : ''}" data-mods="${v}">${v}</button>`).join('')}</div>
+      <div class="p-note">Поставь автомат внутрь щитка — он встанет на рейку. Тащи щиток — всё внутри поедет вместе с ним.</div>`;
   }
   if (d.type === 'jbox') {
     extra = `<div class="chips">${[['S', 'Малая'], ['M', 'Средняя'], ['L', 'Большая']].map(([v, n]) => `<button class="chip ${d.props.size === v ? 'on' : ''}" data-size="${v}">${n}</button>`).join('')}</div>`;
@@ -467,6 +610,18 @@ function renderPanel() {
   const inp = el.querySelector('#p-label');
   inp.onfocus = () => snapshot();
   inp.oninput = () => { d.props.label = inp.value; touch(); render(); };
+  // тёплый пол: мощность = площадь × Вт/м²
+  for (const [id, key] of [['#p-area', 'area'], ['#p-wpm', 'wpm']]) {
+    const i = el.querySelector(id);
+    if (!i) continue;
+    i.onfocus = () => snapshot();
+    i.oninput = () => {
+      d.props[key] = Math.max(0, +i.value || 0); d.props.w = Math.round(d.props.area * d.props.wpm);
+      el.querySelector('#p-total').textContent = `Итого ${fmtW(d.props.w)}`;
+      touch(); render();
+    };
+    i.onchange = () => { evaluatePower(); render(); renderPanel(); };
+  }
   const pw = el.querySelector('#p-w');
   if (pw) {
     pw.onfocus = () => snapshot();
@@ -499,6 +654,9 @@ $('#panel').onclick = e => {
     else if (b.dataset.ch) { snapshot(); d.props.ch = b.dataset.ch; }
     else if (b.dataset.a) { snapshot(); d.props.a = +b.dataset.a; }
     else if (b.dataset.ma) { snapshot(); d.props.ma = +b.dataset.ma; }
+    else if (b.dataset.wpm) { snapshot(); d.props.wpm = +b.dataset.wpm; d.props.w = Math.round(d.props.area * d.props.wpm); }
+    else if (b.dataset.rows) { snapshot(); d.props.rows = +b.dataset.rows; }
+    else if (b.dataset.mods) { snapshot(); d.props.mods = +b.dataset.mods; }
     else if (b.dataset.size) { snapshot(); d.props.size = b.dataset.size; }
     else return;
   }
@@ -637,11 +795,23 @@ function tidyTwists() {
   }
 }
 
+// автомат или модуль, поставленный в щиток, встаёт на ближайшую DIN-рейку по сетке модулей
+function snapToRail(d) {
+  const sh = cur.devices.find(b => b.type === 'shield' && boxContains(b, d.x, d.y));
+  if (!sh) return;
+  const [W] = shieldSize(sh), [bx] = PARTS[d.type].box(d);
+  const ry = shieldRails(sh).reduce((a, b) => (Math.abs(sh.y + b - d.y) < Math.abs(sh.y + a - d.y) ? b : a));
+  const left = sh.x - W / 2 + 30, n = Math.max(0, Math.round((d.x + bx - left) / MOD));
+  d.rot = 0;
+  d.x = left + n * MOD - bx;
+  d.y = sh.y + ry;
+}
+
 // коробка, внутри которой точка (для свободных концов)
 function boxAt(x, y) {
   for (let i = cur.devices.length - 1; i >= 0; i--) {
     const d = cur.devices[i];
-    if (PARTS[d.type].isBox && Math.hypot(x - d.x, y - d.y) < PARTS.jbox.r(d) - 4) return d;
+    if (PARTS[d.type].isBox && boxContains(d, x, y, -4)) return d;
   }
   return null;
 }
@@ -704,7 +874,7 @@ function hitTest(x, y) {
   for (let i = cur.devices.length - 1; i >= 0; i--) {
     const d = cur.devices[i];
     if (!PARTS[d.type].isBox) continue;
-    if (Math.hypot(x - d.x, y - d.y) < PARTS.jbox.r(d) + 10 / k) return { kind: 'dev', d, lx: 0, ly: 0 };
+    if (boxContains(d, x, y, 10 / k)) return { kind: 'dev', d, lx: 0, ly: 0 };
   }
   return null;
 }
@@ -760,6 +930,7 @@ cv.addEventListener('pointermove', e => {
 
 function startDrag(g) {
   const h = g.hit;
+  if (meter && h && (h.kind === 'term' || h.kind === 'end')) { g.type = 'pan'; return; }
   if (h && h.kind === 'term' && PARTS[h.d.type].node) { g.type = 'move'; snapshot(); g.items = [{ d: h.d, x: h.d.x, y: h.d.y }]; g.bends = []; pending = null; return; }
   if (h && h.kind === 'term') { g.type = 'wire'; pending = null; rubber = { from: { d: h.d.id, t: h.t.id }, x: g.wx, y: g.wy }; return; }
   if (h && h.kind === 'end') { g.type = 'end'; pending = null; snapshot(); g.e = h.w[h.side]; g.ref = { w: h.w.id, side: h.side }; return; }
@@ -770,7 +941,7 @@ function startDrag(g) {
     g.bends = [];
     if (PARTS[d.type].isBox) {
       // коробка тащит за собой всё, что внутри: устройства, изгибы и свободные концы проводов
-      const r = PARTS.jbox.r(d), inside = (x, y) => Math.hypot(x - d.x, y - d.y) < r;
+      const inside = (x, y) => boxContains(d, x, y);
       for (const o of cur.devices) if (o !== d && !PARTS[o.type].isBox && inside(o.x, o.y)) g.items.push({ d: o, x: o.x, y: o.y });
       for (const w of cur.wires) {
         (w.pts || []).forEach(p => { if (inside(p[0], p[1])) g.bends.push({ p, i0: 0, i1: 1, x: p[0], y: p[1] }); });
@@ -849,6 +1020,7 @@ function endPointer(e) {
     render(); renderPanel();
     return;
   }
+  if (g.type === 'move' && g.items.length === 1 && PARTS[g.items[0].d.type].din) snapToRail(g.items[0].d);
   if (g.type === 'move' || g.type === 'bend') touch();
   if (g.type === 'pan') saveView();
   render();
@@ -860,6 +1032,13 @@ cv.addEventListener('pointercancel', endPointer);
 function saveView() { if (cur) { cur.view = { ...view }; save(); } }
 
 function tap(h, wx, wy) {
+  // мультиметр: тапы по клеммам и концам ставят щупы, по выключателям — переключают как обычно
+  if (meter && h && (h.kind === 'term' || h.kind === 'end')) {
+    const pt = h.kind === 'term' ? { d: h.d.id, t: h.t.id } : { w: h.w.id, side: h.side };
+    if (!meter.a || meter.b) meter = { a: pt, b: null }; else meter.b = pt;
+    render(); return;
+  }
+  if (meter && !h) { sel = null; render(); renderPanel(); return; }
   if (!h) {
     // провод от клеммы можно оставить концом внутри коробки
     if (pending && !isFree(pending) && boxAt(wx, wy)) { const from = pending; pending = null; makeWire(from, { x: snap(wx), y: snap(wy) }); }

@@ -111,13 +111,43 @@ section { position: fixed; inset: 0; display: flex; flex-direction: column; }
 .tb { border: 1px solid var(--line); background: var(--dev-soft); height: 44px; min-width: 44px; border-radius: 12px; font-size: 18px; }
 .tb.primary { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); font-weight: 650; font-size: 15px; padding: 0 18px; }
 
+.tb.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tb.chk { font-weight: 700; font-size: 15px; padding: 0 12px; }
+.tb.chk.err { background: var(--hot); border-color: var(--hot); color: #fff; }
+.tb.chk.warn { background: var(--acc-soft); border-color: var(--acc); color: var(--acc); }
+@media (max-width: 520px) { .tb.zoom { display: none; } }
+
+/* мультиметр */
+#meter {
+  position: absolute; top: 10px; left: 10px; min-width: 170px; max-width: calc(100% - 20px);
+  background: #23272E; color: #DDE3EA; border-radius: 14px; padding: 8px 12px 10px; box-shadow: var(--shadow);
+  pointer-events: none; border: 3px solid #E8B71A;
+}
+.m-lcd { background: #B9C6A8; color: #1E2617; border-radius: 6px; padding: 4px 10px; font: 700 26px/1.1 ui-monospace, Consolas, monospace; text-align: right; }
+.m-sub { font-size: 12px; margin-top: 6px; color: #AEB7C2; }
+.probe circle { stroke: #fff; stroke-width: 1.5; }
+.probe text { font-size: 8px; font-weight: 700; fill: #fff; }
+.probe.red circle { fill: #D2302A; } .probe.black circle { fill: #1C1C1C; }
+
+/* ошибки */
+.mark circle { stroke: #fff; stroke-width: 1.5; }
+.mark text { fill: #fff; font-weight: 800; }
+.mark.m-err circle { fill: var(--hot); } .mark.m-warn circle { fill: var(--acc); }
+.iss { display: flex; gap: 10px; align-items: flex-start; text-align: left; width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 12px; padding: 10px; }
+.iss:hover { border-color: var(--acc); }
+.iss-dot { flex: none; width: 22px; height: 22px; border-radius: 50%; color: #fff; font-weight: 800; display: grid; place-items: center; font-size: 13px; margin-top: 1px; }
+.iss.err .iss-dot { background: var(--hot); } .iss.warn .iss-dot { background: var(--acc); }
+.iss-t { flex: 1; font-size: 14px; }
+.iss-p { display: inline-block; font-size: 11px; font-weight: 650; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; margin-top: 4px; }
+.iss-list { display: flex; flex-direction: column; gap: 8px; }
+
 /* панель свойств */
-#panel {
+#panel, #issues {
   position: absolute; left: 8px; right: 8px; bottom: 8px; max-width: 560px; margin: 0 auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
   padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; max-height: 50%; overflow: auto;
 }
-@media (min-width: 900px) { #panel { left: auto; right: 12px; top: 12px; bottom: auto; width: 340px; max-height: calc(100% - 24px); } }
+@media (min-width: 900px) { #panel, #issues { left: auto; right: 12px; top: 12px; bottom: auto; width: 360px; max-height: calc(100% - 24px); } }
 .p-head { display: flex; align-items: center; gap: 2px; margin: -4px -6px -2px 0; }
 .p-head b { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-head .ib { font-size: 18px; color: var(--muted); }
@@ -223,6 +253,16 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 .bus { stroke: var(--dev-line); stroke-width: 1.2; }
 .bus-t { fill: #fff; text-anchor: start; }
 .screw { fill: #D9DDE2; stroke: #6A717B; stroke-width: 1; }
+.shield { fill: var(--box); stroke: var(--dev-line); stroke-width: 2.4; }
+.shield-in { fill: none; stroke: var(--dev-line); stroke-width: 1; opacity: .35; }
+.rail { fill: var(--dev-soft); stroke: var(--w-grey); stroke-width: 1; }
+.led { fill: var(--dev-soft); stroke: var(--dev-line); stroke-width: .8; }
+.led.on { fill: #3BD16F; }
+.lcd { fill: #B9C6A8; stroke: var(--dev-line); stroke-width: .8; }
+.lcd-t { font: 700 14px ui-monospace, Consolas, monospace; fill: #1E2617; }
+.kbtn { fill: var(--dev-soft); stroke: var(--dev-line); stroke-width: .8; }
+.beam { fill: var(--lit); opacity: .28; }
+.chip-in { width: 72px; height: 34px; padding: 4px 8px; font-size: 14px; }
 .jbox { fill: var(--box); stroke: var(--dev-line); stroke-width: 2; }
 .jbox-in { fill: none; stroke: var(--dev-line); stroke-width: 1; stroke-dasharray: 3 5; opacity: .5; }
 .jl { fill: var(--muted); }
@@ -276,13 +316,19 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
       <g id="world"></g>
     </svg>
     <div id="hint" hidden></div>
+    <div id="meter" hidden></div>
     <div id="panel" hidden></div>
+    <div id="issues" hidden></div>
   </div>
   <nav class="tools">
     <button class="tb primary" id="btn-add">＋ Устройство</button>
+    <button class="tb chk" id="btn-check" title="Проверка по ПУЭ">✓</button>
+    <button class="tb" id="btn-meter" title="Мультиметр" aria-label="Мультиметр">
+      <svg width="20" height="22" viewBox="0 0 20 22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="2" y="1" width="16" height="20" rx="3"/><rect x="5" y="4" width="10" height="6" rx="1"/><circle cx="10" cy="15" r="3"/></svg>
+    </button>
     <span class="grow"></span>
-    <button class="tb" id="btn-zout" aria-label="Уменьшить">−</button>
-    <button class="tb" id="btn-zin" aria-label="Увеличить">＋</button>
+    <button class="tb zoom" id="btn-zout" aria-label="Уменьшить">−</button>
+    <button class="tb zoom" id="btn-zin" aria-label="Увеличить">＋</button>
     <button class="tb" id="btn-fit" aria-label="Вся схема">⤢</button>
   </nav>
 </section>
@@ -292,6 +338,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 
 <script src="parts.js"></script>
 <script src="engine.js"></script>
+<script src="rules.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

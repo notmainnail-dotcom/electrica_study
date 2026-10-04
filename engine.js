@@ -25,6 +25,13 @@ function worldBox(d, withTerms) {
   return [x1 + d.x, y1 + d.y, x2 + d.x, y2 + d.y];
 }
 
+// точка внутри коробки или щитка (pad — запас за край)
+function boxContains(b, x, y, pad = 0) {
+  const p = PARTS[b.type];
+  if (p.shape === 'rect') { const [bx, by, bw, bh] = p.box(b); return x >= b.x + bx - pad && x <= b.x + bx + bw + pad && y >= b.y + by - pad && y <= b.y + by + bh + pad; }
+  return Math.hypot(x - b.x, y - b.y) < p.r(b) + pad;
+}
+
 // конец провода: на клемме { d, t } или свободный (лежит в коробке) { x, y }
 const isFree = e => e.d == null;
 function endPos(sc, e) {
@@ -46,8 +53,9 @@ function wirePts(sc, w) {
 const PHASES = ['L1', 'L2', 'L3'];
 const isHot = c => !!c && c[0] === 'L';
 
-// узлы схемы: объединение клемм через провода и замкнутые контакты
-function nets(sc) {
+// узлы схемы: объединение клемм через провода и замкнутые контакты.
+// closed = все выключатели и автоматы «замкнуты»: так видно, какой потенциал на проводнике при работе
+function nets(sc, closed) {
   const parent = new Map();
   const add = k => { if (!parent.has(k)) parent.set(k, k); };
   const find = k => {
@@ -59,7 +67,10 @@ function nets(sc) {
   };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra && rb && ra !== rb) parent.set(ra, rb); };
   for (const d of sc.devices) for (const t of termsOf(d)) add(tkey(d.id, t.id));
-  for (const d of sc.devices) for (const g of PARTS[d.type].conn(d)) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
+  for (const d of sc.devices) {
+    const p = PARTS[d.type];
+    for (const g of (closed && p.closed ? p.closed(d) : p.conn(d))) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
+  }
   for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
   return find;
 }
@@ -86,9 +97,9 @@ function loadStatus(a, b) {
   return { st: other === 'N' || other === 'PE' ? 'ok' : 'nozero', ph };
 }
 
-// расчёт при поданном питании
-function simulate(sc) {
-  const find = nets(sc);
+// расчёт при поданном питании (closed — см. nets)
+function simulate(sc, closed) {
+  const find = nets(sc, closed);
   const marks = new Map(); // узел → какие потенциалы в него пришли
   const mark = (k, c) => { const r = find(k); if (r == null) return; if (!marks.has(r)) marks.set(r, new Set()); marks.get(r).add(c); };
   for (const d of sc.devices) {
@@ -113,7 +124,23 @@ function simulate(sc) {
     for (const t of termsOf(d)) if (isHot(cls(tkey(d.id, t.id)))) hot++;
     if (PARTS[d.type].load) loads.set(d.id, loadStatus(cls(tkey(d.id, 'L')), cls(tkey(d.id, 'N'))));
   }
-  return { short, cls, loads, hot };
+  const marksOf = k => marks.get(find(k)) || new Set();
+  return { short, cls, loads, hot, marksOf };
+}
+
+// ток по каждому проводу, А: убираем провод — нагрузки, которые от этого перестали работать, питались через него
+function wireCurrents(sc, base) {
+  const res = new Map();
+  const ok = [...base.loads].filter(([, r]) => r.st === 'ok').map(([id]) => sc.devices.find(d => d.id === id));
+  if (!ok.length) return res;
+  for (const w of sc.wires) {
+    if (isFree(w.a) || isFree(w.b)) continue;
+    const s = simulate({ devices: sc.devices, wires: sc.wires.filter(x => x !== w) });
+    let I = 0;
+    for (const l of ok) if (s.loads.get(l.id).st !== 'ok') I += loadW(l) / VOLT;
+    if (I > 0) res.set(w.id, I);
+  }
+  return res;
 }
 
 // мощность нагрузки, Вт (у старых схем props.w может не быть — берём значение по умолчанию)
