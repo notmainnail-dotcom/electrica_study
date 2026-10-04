@@ -54,8 +54,9 @@ const PHASES = ['L1', 'L2', 'L3'];
 const isHot = c => !!c && c[0] === 'L';
 
 // узлы схемы: объединение клемм через провода и замкнутые контакты.
-// closed = все выключатели и автоматы «замкнуты»: так видно, какой потенциал на проводнике при работе
-function nets(sc, closed) {
+// closed = все выключатели и автоматы «замкнуты»: так видно, какой потенциал на проводнике при работе.
+// off = устройства без питания (реле, таймеры, датчики): их контакты в положении «нет питания» (connOff)
+function nets(sc, closed, off) {
   const parent = new Map();
   const add = k => { if (!parent.has(k)) parent.set(k, k); };
   const find = k => {
@@ -69,7 +70,8 @@ function nets(sc, closed) {
   for (const d of sc.devices) for (const t of termsOf(d)) add(tkey(d.id, t.id));
   for (const d of sc.devices) {
     const p = PARTS[d.type];
-    for (const g of (closed && p.closed ? p.closed(d) : p.conn(d))) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
+    const groups = closed && p.closed ? p.closed(d) : off && off.has(d.id) ? (p.connOff ? p.connOff(d) : []) : p.conn(d);
+    for (const g of groups) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
   }
   for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
   // прибор, включённый вилкой в розетку: его L, N, PE соединены с клеммами розетки
@@ -104,7 +106,7 @@ function combTeeth(sc, c) {
 
 // какие типы клемм (L, N, PE) есть в узле каждой клеммы — для выбора цвета нового провода
 function netKinds(sc) {
-  const find = nets(sc), kinds = new Map();
+  const find = nets(sc, true), kinds = new Map();
   for (const d of sc.devices) for (const t of termsOf(d)) {
     if (t.kind === 'x') continue;
     const r = find(tkey(d.id, t.id));
@@ -124,9 +126,35 @@ function loadStatus(a, b) {
   return { st: other === 'N' || other === 'PE' ? 'ok' : 'nozero', ph };
 }
 
-// расчёт при поданном питании (closed — см. nets)
+// напряжение в сети (задаётся на вводе, по умолчанию 220)
+const netU = sc => sc.devices.find(d => d.type === 'src' || d.type === 'src3')?.props.u ?? 220;
+
+// есть ли питание у реле, таймера, датчика: на L фаза, на N ноль; у реле напряжения ещё и напряжение в пределах уставок
+function supplyOk(sc, s, d) {
+  const l = s.cls(tkey(d.id, 'L')), n = s.cls(tkey(d.id, 'N'));
+  if (!isHot(l) || (n !== 'N' && n !== 'PE')) return false;
+  if (d.type === 'rn') { const u = netU(sc); return u >= d.props.umin && u <= d.props.umax; }
+  return true;
+}
+
+// расчёт при поданном питании (closed — см. nets).
+// Устройства с питанием (supply) сначала считаются выключенными; включаем те, к которым пришли фаза и ноль,
+// и пересчитываем, пока картина не перестанет меняться — как при подаче напряжения в жизни.
 function simulate(sc, closed) {
-  const find = nets(sc, closed);
+  const sup = closed ? [] : sc.devices.filter(d => PARTS[d.type].supply);
+  let off = new Set(sup.map(d => d.id)), res = simulateOnce(sc, closed, off);
+  for (let i = 0; i <= sup.length; i++) {
+    const next = new Set(sup.filter(d => !supplyOk(sc, res, d)).map(d => d.id));
+    if (next.size === off.size && [...next].every(id => off.has(id))) break;
+    off = next;
+    res = simulateOnce(sc, closed, off);
+  }
+  res.off = off;
+  return res;
+}
+
+function simulateOnce(sc, closed, off) {
+  const find = nets(sc, closed, off);
   const marks = new Map(); // узел → какие потенциалы в него пришли
   const mark = (k, c) => { const r = find(k); if (r == null) return; if (!marks.has(r)) marks.set(r, new Set()); marks.get(r).add(c); };
   for (const d of sc.devices) {

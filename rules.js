@@ -134,6 +134,16 @@ function checkScheme(sc, powered) {
   if (noRcdOut.length) add('err', '7.1.82', `Уличные розетки обязательно через УЗО до 30 мА (${noRcdOut.length} шт.)`, dt(noRcdOut));
   if (noRcd.length) add('warn', '7.1.79', `Розеточные группы — через УЗО до 30 мА. Без УЗО: ${noRcd.length} шт.`, dt(noRcd));
 
+  // реле, таймеры, датчики: без фазы и нуля на входе не включатся
+  const real = simulate(sc);
+  for (const d of sc.devices) {
+    if (!PARTS[d.type].supply || !wired.has(d.id)) continue;
+    const l = real.cls(tkey(d.id, 'L')), n = real.cls(tkey(d.id, 'N')), zero = n === 'N' || n === 'PE';
+    const nm = PARTS[d.type].name + (d.props.label ? ' «' + d.props.label + '»' : '');
+    if (isHot(l) && !zero) add('err', '', `${nm} не включится: на клемму N не пришёл ноль. Ему нужно питание — фаза и ноль`, [{ kind: 'dev', id: d.id }]);
+    else if (!isHot(st.cls(tkey(d.id, 'L'))) && zero) add('err', '', `${nm} не включится: на клемму L не приходит фаза`, [{ kind: 'dev', id: d.id }]);
+  }
+
   // УЗО друг за другом: верхнее должно быть минимум в 3 раза грубее
   for (const a of sc.devices) {
     if (!PARTS[a.type].rcd) continue;

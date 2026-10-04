@@ -1,6 +1,6 @@
 // Офлайн-режим: сначала сеть (чтобы обновления приходили), без сети — сохранённая копия.
 // cache: 'no-cache' — каждый раз сверяемся с сервером, иначе браузер до 10 минут отдаёт старые файлы из своего кэша.
-const C = 'elab-v14';
+const C = 'elab-v15';
 const FILES = ['./', './index.html', './parts.js', './engine.js', './rules.js', './app.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

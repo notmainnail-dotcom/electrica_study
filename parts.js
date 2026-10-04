@@ -75,7 +75,7 @@ function appliance(name, w, icon) {
 // модуль на DIN-рейку (ширина модуля 36) с фазой на входе и выходе и нулём для питания: реле напряжения, Wi-Fi реле
 function module1(name, title, icon, switchable) {
   return {
-    name, group: 'Щит и питание', din: true,
+    name, group: 'Щит и питание', din: true, supply: true,
     init: { state: { on: true } },
     box: () => [-18, -45, 36, 90],
     terms: () => [T('L', -10, -55, 'x', 'L'), T('N', 10, -55, 'N', 'N'), T('out', -10, 55, 'x', '')],
@@ -92,7 +92,7 @@ function module1(name, title, icon, switchable) {
 // датчик вне щита с тремя проводами: фаза, ноль, нагрузка (Н) — фотореле, датчик движения
 function sensor(name, icons, words) {
   return {
-    name, group: 'Свет и розетки', showName: true,
+    name, group: 'Свет и розетки', showName: true, supply: true,
     init: { state: { on: false } },
     box: () => [-30, -32, 60, 64],
     terms: () => [T('L', -20, 42, 'x', 'L'), T('N', 0, 42, 'N', 'N'), T('out', 20, 42, 'x', 'Н')],
@@ -156,9 +156,9 @@ const PARTS = {
     box: () => [-60, -30, 120, 60],
     terms: () => [T('L', -40, 40, 'L'), T('N', 0, 40, 'N'), T('PE', 40, 40, 'PE')],
     conn: () => [],
-    draw: () => `<rect class="body" x="-60" y="-30" width="120" height="60" rx="6"/>
+    draw: d => `<rect class="body" x="-60" y="-30" width="120" height="60" rx="6"/>
       <path class="bolt" d="M-36 -20 L-46 0 H-38 L-43 16 L-28 -6 H-36 L-30 -20Z"/>
-      <text class="t-m" x="12" y="-3">ВВОД</text><text class="t-s" x="12" y="11">~220 В</text>`
+      <text class="t-m" x="12" y="-3">ВВОД</text><text class="t-s${(d.props.u ?? 220) !== 220 ? ' warn-t' : ''}" x="12" y="11">~${d.props.u ?? 220} В</text>`
   },
 
   src3: {
@@ -166,9 +166,12 @@ const PARTS = {
     box: () => [-80, -30, 160, 60],
     terms: () => [T('L1', -60, 40, 'L1'), T('L2', -30, 40, 'L2'), T('L3', 0, 40, 'L3'), T('N', 30, 40, 'N'), T('PE', 60, 40, 'PE')],
     conn: () => [],
-    draw: () => `<rect class="body" x="-80" y="-30" width="160" height="60" rx="6"/>
+    draw: d => {
+      const u = d.props.u ?? 220;
+      return `<rect class="body" x="-80" y="-30" width="160" height="60" rx="6"/>
       <path class="bolt" d="M-52 -20 L-62 0 H-54 L-59 16 L-44 -6 H-52 L-46 -20Z"/>
-      <text class="t-m" x="14" y="-3">ВВОД 3Ф</text><text class="t-s" x="14" y="11">~380/220 В</text>`
+      <text class="t-m" x="14" y="-3">ВВОД 3Ф</text><text class="t-s${u !== 220 ? ' warn-t' : ''}" x="14" y="11">~${Math.round(u * Math.sqrt(3))}/${u} В</text>`;
+    }
   },
 
   brk: {
@@ -247,30 +250,38 @@ const PARTS = {
   },
 
   // реле напряжения на 2 модуля: фаза и ноль на входе (сверху) и на выходе (снизу), оба разрываются
+  // Работает, только когда на вход пришли фаза и ноль (supply), и отключает при напряжении вне уставок umin…umax.
   rn: {
-    name: 'Реле напряжения', group: 'Щит и питание', din: true,
-    init: { state: { on: true } },
+    name: 'Реле напряжения', group: 'Щит и питание', din: true, supply: true,
+    init: { state: { on: true }, props: { umin: 170, umax: 250, delay: 10 } },
     box: () => [-36, -45, 72, 90],
     terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('out', -20, 55, 'x', 'L'), T('Nout', 20, 55, 'N', 'N')],
-    conn: d => (d.state.on ? [['L', 'out'], ['N', 'Nout']] : []),
+    conn: () => [['L', 'out'], ['N', 'Nout']],
+    connOff: () => [],
     closed: () => [['L', 'out'], ['N', 'Nout']],
-    draw: (d, h) => `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
+    draw: (d, h, s) => {
+      // экран: напряжение, если реле запитано; красное — если вне уставок; прочерки — если нет фазы или нуля
+      const u = s.u, out = u != null && (u < d.props.umin || u > d.props.umax);
+      return `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
       <path class="mod" d="M0 -45 V-30 M0 30 V45"/>
       <text class="t-xs" x="0" y="-27">РЕЛЕ НАПР.</text>
       <rect class="disp" x="-26" y="-18" width="52" height="24" rx="2"/>
-      <text class="disp-t big" x="0" y="0">${h && h.L ? '220' : '- - -'}</text>
-      <circle class="led${h && h.out ? ' on' : ''}" cx="-22" cy="18" r="3"/><text class="t-xs" x="-6" y="21">ВЫХ</text>`
+      <text class="disp-t big${out ? ' bad' : ''}" x="0" y="0">${u != null ? u : '- - -'}</text>
+      <circle class="led${h && h.out ? ' on' : ''}" cx="-22" cy="17" r="3"/><text class="t-xs" x="-8" y="20">ВЫХ</text>
+      <text class="t-xs muted-t" x="0" y="31">${d.props.umin}–${d.props.umax}</text>`;
+    }
   },
   wifi: module1('Wi-Fi реле', 'Wi-Fi', '<path d="M-11 -6 a16 16 0 0 1 22 0 M-7 -1 a10 10 0 0 1 14 0 M-3 4 a4 4 0 0 1 6 0"/><circle cx="0" cy="8" r="1.6"/>', true),
 
   // таймер ТЭ15 на 2 модуля: сверху питание L и N, снизу «сухой» переключающий контакт НЗ – общий – НО.
   // Фазу на общий заводят перемычкой от L. Включён: общий–НО, выключен: общий–НЗ.
   tmr: {
-    name: 'Таймер ТЭ15', group: 'Щит и питание', din: true,
+    name: 'Таймер ТЭ15', group: 'Щит и питание', din: true, supply: true,
     init: { state: { on: true } },
     box: () => [-36, -45, 72, 90],
     terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('nc', -20, 55, 'x', 'НЗ'), T('com', 0, 55, 'x', 'О'), T('out', 20, 55, 'x', 'НО')],
     conn: d => [['com', d.state.on ? 'out' : 'nc']],
+    connOff: () => [['com', 'nc']],
     closed: () => [['com', 'out', 'nc']],
     draw: (d, h) => {
       const t = new Date(), hm = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');

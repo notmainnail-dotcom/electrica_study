@@ -184,6 +184,12 @@ const wireById = id => cur.wires.find(w => w.id === id);
 
 function openScheme(id) {
   cur = db.schemes.find(s => s.id === id);
+  // у старых схем могут не быть новых настроек устройств — дописываем значения по умолчанию
+  for (const d of cur.devices) {
+    const init = PARTS[d.type]?.init || {};
+    for (const [k, v] of Object.entries(init.props || {})) if (d.props[k] === undefined) d.props[k] = JSON.parse(JSON.stringify(v));
+    for (const [k, v] of Object.entries(init.state || {})) if (d.state[k] === undefined) d.state[k] = v;
+  }
   hist = []; fut = []; sel = null; pending = null; rubber = null; power = false;
   showIssues = false; meter = null; issuesSig = '';
   $('#scr-list').hidden = true; $('#scr-ed').hidden = false;
@@ -234,10 +240,15 @@ function evaluatePower() {
     if (!s.short) {
       // перегрузка: больше 1,45 номинала автомат отключается (тепловой расцепитель)
       const I = breakerCurrents(cur, s);
-      const over = cur.devices.find(d => I.get(d.id) > d.props.a * 1.45);
+      // если перегружено несколько, первым отключается самый перегруженный
+      const over = cur.devices.filter(d => I.get(d.id) > d.props.a * 1.45).sort((a, b) => I.get(b.id) / b.props.a - I.get(a.id) / a.props.a)[0];
       if (over) {
         over.state.on = false; over.state.trip = true; touch();
-        toast(`Перегрузка: ${fmtA(I.get(over.id))} при номинале ${over.props.a} А. Автомат ${over.props.ch}${over.props.a}${over.props.label ? ' «' + over.props.label + '»' : ''} отключился`);
+        const k = I.get(over.id) / over.props.a, mag = over.props.ch === 'B' ? 5 : 10;
+        const name = `${over.props.ch}${over.props.a}${over.props.label ? ' «' + over.props.label + '»' : ''}`;
+        toast(k >= mag
+          ? `${fmtA(I.get(over.id))} — это ${Math.round(k)} номиналов. Автомат ${name} отключился мгновенно (электромагнитный расцепитель)`
+          : `Перегрузка: ${fmtA(I.get(over.id))} при номинале ${over.props.a} А. Автомат ${name} отключился (тепловой расцепитель — в жизни за секунды или минуты)`);
         continue;
       }
       const r = findLeak(cur);
@@ -266,6 +277,11 @@ function devSvg(d) {
   if (sim && p.comb) for (const t of combTeeth(cur, d)) h[t.i] = t.keys.some(k => isHot(sim.cls(k)));
   const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
   const s = { lit: ok && !!PARTS[d.type].light, live: ok && d.type.startsWith('sock'), on: ok };
+  if (sim && d.type === 'rn') {
+    // реле показывает напряжение, только если к нему пришли и фаза, и ноль
+    const n = sim.cls(tkey(d.id, 'N'));
+    s.u = isHot(sim.cls(tkey(d.id, 'L'))) && (n === 'N' || n === 'PE') ? netU(cur) : null;
+  }
   return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
 }
 
@@ -560,7 +576,8 @@ function meterReading() {
     if (isHot(ca) || isHot(cb)) return { v: '0 В', t: 'Один щуп на фазе, второй ни к чему не подключён' };
     return { v: '0 В', t: 'Напряжения нет' };
   }
-  const find = nets(cur);
+  // без питания реле и таймеры обесточены: их контакты в положении «нет питания»
+  const find = nets(cur, false, new Set(cur.devices.filter(d => PARTS[d.type].supply).map(d => d.id)));
   const same = ka && kb && find(ka) === find(kb);
   return same ? { v: '0,0 Ом', t: 'Звонится: точки соединены' } : { v: 'OL', t: 'Обрыв: точки не соединены' };
 }
@@ -649,9 +666,20 @@ function renderPanel() {
       <div class="chips"><span class="muted unit">Модулей в ряду</span>${[12, 18, 24].map(v => `<button class="chip ${d.props.mods === v ? 'on' : ''}" data-mods="${v}">${v}</button>`).join('')}</div>
       <div class="p-note">Поставь автомат внутрь щитка — он встанет на рейку. Тащи щиток — всё внутри поедет вместе с ним.</div>`;
   }
+  if (d.type === 'rn') {
+    extra = `<div class="chips"><span class="muted unit">Отключать ниже</span><input class="inp chip-in" data-prop="umin" type="number" inputmode="numeric" step="5" value="${d.props.umin}"><span class="muted unit">В, выше</span><input class="inp chip-in" data-prop="umax" type="number" inputmode="numeric" step="5" value="${d.props.umax}"><span class="muted unit">В</span></div>
+      <div class="chips"><span class="muted unit">Задержка включения</span><input class="inp chip-in" data-prop="delay" type="number" inputmode="numeric" step="5" value="${d.props.delay}"><span class="muted unit">с</span></div>
+      <div class="p-note">Реле работает, только когда на вход пришли фаза и ноль. Чтобы проверить уставки, поменяй напряжение в сети на вводе. Задержку в лабе не ждём: реле включается сразу, как напряжение вернулось в пределы.</div>`;
+  }
+  if (d.type === 'src' || d.type === 'src3') {
+    const u = d.props.u ?? 220;
+    extra = `<div class="chips"><span class="muted unit">Напряжение в сети</span>${[160, 190, 220, 250, 280].map(v => `<button class="chip ${u === v ? 'on' : ''}" data-u="${v}">${v}</button>`).join('')}<input class="inp chip-in" data-prop="u" type="number" inputmode="numeric" step="5" value="${u}"><span class="muted unit">В</span></div>
+      <div class="p-note">Меняй, чтобы проверить реле напряжения: просадка или скачок в сети.</div>`;
+  }
   if (p.comb) {
     const cut = d.props.cut || [];
-    extra = `<div class="chips"><span class="muted unit">Зубьев</span>${[6, 12, 18, 24].map(v => `<button class="chip ${d.props.n === v ? 'on' : ''}" data-n="${v}">${v}</button>`).join('')}</div>
+    extra = `<div class="chips"><span class="muted unit">Зубьев</span><button class="chip" data-n="${Math.max(1, d.props.n - 1)}" aria-label="Короче">−</button><b class="unit">${d.props.n}</b><button class="chip" data-n="${Math.min(36, d.props.n + 1)}" aria-label="Длиннее">+</button>
+      <span class="sep"></span>${[6, 12, 18, 24].map(v => `<button class="chip ${d.props.n === v ? 'on' : ''}" data-n="${v}">${v}</button>`).join('')}</div>
       <div class="p-note">Положи гребёнку в щиток над автоматами — она встанет на верхние клеммы. Нажми на зуб ниже, чтобы отломать его (например, над нулём УЗО).</div>
       <div class="chips teeth">${Array.from({ length: d.props.n }, (_, i) => `<button class="chip ${cut.includes(i) ? 'cut' : 'on'}" data-tooth="${i}" title="${p.comb === 3 ? 'L' + (i % 3 + 1) : ''}">${p.comb === 3 ? 'L' + (i % 3 + 1) : i + 1}</button>`).join('')}</div>`;
   }
@@ -675,17 +703,24 @@ function renderPanel() {
     i.oninput = () => {
       d.props[key] = Math.max(0, +i.value || 0); d.props.w = Math.round(d.props.area * d.props.wpm);
       el.querySelector('#p-total').textContent = `Итого ${fmtW(d.props.w)}`;
-      touch(); render();
+      touch(); render(); evalSoon();
     };
-    i.onchange = () => { evaluatePower(); render(); renderPanel(); };
   }
   const pw = el.querySelector('#p-w');
   if (pw) {
     pw.onfocus = () => snapshot();
-    pw.oninput = () => { d.props.w = Math.max(0, Math.round(+pw.value || 0)); touch(); render(); };
-    pw.onchange = () => { evaluatePower(); render(); };
+    pw.oninput = () => { d.props.w = Math.max(0, Math.round(+pw.value || 0)); touch(); render(); evalSoon(); };
   }
+  // числовые настройки (уставки реле, напряжение в сети)
+  el.querySelectorAll('[data-prop]').forEach(i => {
+    i.onfocus = () => snapshot();
+    i.oninput = () => { if (i.value === '') return; d.props[i.dataset.prop] = +i.value; touch(); render(); evalSoon(); };
+  });
 }
+
+// пересчёт срабатываний, когда пользователь перестал печатать (а не после выхода из поля)
+let evalTimer = 0;
+function evalSoon() { clearTimeout(evalTimer); evalTimer = setTimeout(() => { evaluatePower(); render(); }, 400); }
 
 $('#panel').onclick = e => {
   const b = e.target.closest('button');
@@ -713,6 +748,7 @@ $('#panel').onclick = e => {
     else if (b.dataset.a) { snapshot(); d.props.a = +b.dataset.a; }
     else if (b.dataset.ma) { snapshot(); d.props.ma = +b.dataset.ma; }
     else if (b.dataset.wpm) { snapshot(); d.props.wpm = +b.dataset.wpm; d.props.w = Math.round(d.props.area * d.props.wpm); }
+    else if (b.dataset.u) { snapshot(); d.props.u = +b.dataset.u; }
     else if (b.dataset.n) { snapshot(); d.props.n = +b.dataset.n; d.props.cut = (d.props.cut || []).filter(i => i < d.props.n); snapToRail(d); }
     else if (b.dataset.tooth) {
       snapshot();
