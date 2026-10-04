@@ -72,7 +72,34 @@ function nets(sc, closed) {
     for (const g of (closed && p.closed ? p.closed(d) : p.conn(d))) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
   }
   for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
+  // прибор, включённый вилкой в розетку: его L, N, PE соединены с клеммами розетки
+  for (const d of sc.devices) {
+    if (!d.props || !d.props.plug || !sc.devices.some(o => o.id === d.props.plug)) continue;
+    for (const t of ['L', 'N', 'PE']) union(tkey(d.id, t), tkey(d.props.plug, t));
+  }
+  // гребёнки: клеммы под зубьями одной фазы соединены
+  for (const c of sc.devices) {
+    const p = PARTS[c.type];
+    if (!p.comb) continue;
+    const groups = Array.from({ length: p.comb }, () => []);
+    for (const t of combTeeth(sc, c)) if (!t.cut) groups[t.i % p.comb].push(...t.keys);
+    for (const g of groups) for (let i = 1; i < g.length; i++) union(g[0], g[i]);
+  }
   return find;
+}
+
+// зубья гребёнки: где стоят и в какие клеммы попали (допуск 5 — у УЗО и реле клеммы чуть смещены от середины модуля)
+function combTeeth(sc, c) {
+  const p = PARTS[c.type], cut = c.props.cut || [], out = [];
+  for (let i = 0; i < c.props.n; i++) {
+    const x = c.x + p.toothX(c, i), y = c.y, keys = [];
+    for (const d of sc.devices) {
+      if (d === c || PARTS[d.type].comb) continue;
+      for (const t of termsOf(d)) { const [tx, ty] = termPos(d, t); if (Math.abs(tx - x) < 5 && Math.abs(ty - y) < 5) keys.push(tkey(d.id, t.id)); }
+    }
+    out.push({ i, x, y, keys, cut: cut.includes(i) });
+  }
+  return out;
 }
 
 // какие типы клемм (L, N, PE) есть в узле каждой клеммы — для выбора цвета нового провода

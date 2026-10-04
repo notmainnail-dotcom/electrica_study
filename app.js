@@ -263,6 +263,7 @@ function devSvg(d) {
   const p = PARTS[d.type];
   const h = {};
   if (sim) for (const t of p.terms(d)) h[t.id] = isHot(sim.cls(tkey(d.id, t.id)));
+  if (sim && p.comb) for (const t of combTeeth(cur, d)) h[t.i] = t.keys.some(k => isHot(sim.cls(k)));
   const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
   const s = { lit: ok && !!PARTS[d.type].light, live: ok && d.type.startsWith('sock'), on: ok };
   return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
@@ -278,6 +279,7 @@ function edgePoint(d, t, shrink = 0) {
 
 function termsSvg(d) {
   let out = '';
+  if (d.props.plug) return ''; // прибор на вилке: клеммы не показываем, он подключён шнуром
   if (PARTS[d.type].node) {
     // скрутка: медная точка на месте соединения
     const [wx, wy] = termPos(d, termsOf(d)[0]);
@@ -315,18 +317,57 @@ function loadText(d) {
   if (!r) return null;
   const three = cur.devices.some(o => o.type === 'src3');
   const ph = three && r.ph ? ' · ' + r.ph : '';
-  const sockW = d.type.startsWith('sock') && loadW(d) ? ' · ' + fmtW(loadW(d)) : '';
+  const sw = d.type.startsWith('sock') ? socketW(d) : 0, sockW = sw ? ' · ' + fmtW(sw) : '';
   if (r.st === 'ok') return { cls: 'ok', t: (PARTS[d.type].light ? 'горит' : d.type.startsWith('sock') ? '220 В' + sockW : 'работает') + ph };
   if (r.st === '380') return { cls: 'bad', t: '380 В! Между фазами' };
   if (r.st === 'nozero') return { cls: 'warn', t: 'нет нуля' + ph };
   return { cls: 'off', t: 'нет фазы' };
 }
 
+// прибор отпустили на розетку — включаем вилку и ставим прибор рядом
+function tryPlug(d) {
+  const [a1, b1, a2, b2] = worldBox(d);
+  const so = cur.devices.find(s => s.type.startsWith('sock') && (([c1, e1, c2, e2]) => a1 < c2 && a2 > c1 && b1 < e2 && b2 > e1)(worldBox(s)));
+  if (!so) return;
+  const busy = cur.devices.find(o => o !== d && o.props.plug === so.id);
+  if (busy) { toast(`Розетка занята: в ней ${PARTS[busy.type].name}`); d.x += 120; return; }
+  d.props.plug = so.id;
+  d.x = so.x + 110; d.y = so.y - 4;
+  toast(`${PARTS[d.type].name}: вилка в розетке`);
+  evaluatePower();
+}
+
+// шнур от прибора до розетки и вилка в розетке
+function cordsSvg() {
+  let s = '';
+  for (const d of cur.devices) {
+    const so = d.props.plug && devById(d.props.plug);
+    if (!so) continue;
+    const [fx, fy] = rotP(0, -6, so.rot); const face = [so.x + fx, so.y + fy];
+    // шнур выходит из ближайшего к розетке бока прибора
+    const sides = [[-35, -5], [35, -5], [0, -36], [0, 26]].map(([x, y]) => { const [rx, ry] = rotP(x, y, d.rot); return [d.x + rx, d.y + ry]; });
+    const a = sides.reduce((m, p) => (Math.hypot(p[0] - face[0], p[1] - face[1]) < Math.hypot(m[0] - face[0], m[1] - face[1]) ? p : m));
+    // шнур заходит в вилку сбоку — с той стороны, где прибор, и провисает дугой
+    const dir = a[0] >= face[0] ? 1 : -1, end = [face[0] + dir * 14, face[1]];
+    const sag = Math.min(50, Math.hypot(a[0] - end[0], a[1] - end[1]) / 4) + 12;
+    const path = `M${a[0]} ${a[1]} C${a[0] + (a[0] === d.x ? 0 : -dir * 20)} ${a[1] + sag} ${end[0] + dir * 30} ${end[1] + sag} ${end[0]} ${end[1]}`;
+    const hot = sim && sim.loads.get(d.id)?.st === 'ok';
+    s += `<path class="cord-case" d="${path}"/><path class="cord${hot ? ' on' : ''}" d="${path}"/>
+      <g transform="translate(${face[0]} ${face[1]})"><rect class="plug" x="-12" y="-12" width="24" height="24" rx="8"/><rect class="plug-g" x="${dir > 0 ? 9 : -17}" y="-4" width="8" height="8" rx="2"/></g>`;
+  }
+  return s;
+}
+
+// всё, что включено в розетку: своя «нагрузка без прибора» + приборы на вилке
+const socketW = s => loadW(s) + cur.devices.filter(d => d.props.plug === s.id).reduce((a, d) => a + loadW(d), 0);
+
 function labelSvg(d) {
   const p = PARTS[d.type];
-  const b = worldBox(d, true), cx = (b[0] + b[2]) / 2;
+  const b = worldBox(d, !d.props.plug), cx = (b[0] + b[2]) / 2;
   let y = b[3] + 16, out = '';
-  if (!p.noLabel && d.props.label) { out += `<text class="dlbl" x="${cx}" y="${y}">${esc(d.props.label)}</text>`; y += 18; }
+  // подпись: у техники и датчиков всегда название, плюс своя подпись пользователя
+  const text = p.showName ? p.name + (d.props.label ? ' · ' + d.props.label : '') : !p.noLabel ? d.props.label : '';
+  if (text) { out += `<text class="dlbl" x="${cx}" y="${y}">${esc(text)}</text>`; y += 18; }
   const lt = loadText(d);
   if (lt) {
     const w = lt.t.length * 6.4 + 16;
@@ -388,6 +429,7 @@ function render() {
   for (const d of cur.devices) if (PARTS[d.type].isBox) out.push(devSvg(d));
   for (const w of cur.wires) out.push(wireSvg(w));
   for (const d of cur.devices) if (!PARTS[d.type].isBox) out.push(devSvg(d));
+  out.push(cordsSvg());
   for (const d of cur.devices) out.push(termsSvg(d));
   for (const d of cur.devices) out.push(labelSvg(d));
   out.push(selSvg());
@@ -584,7 +626,16 @@ function renderPanel() {
       <span class="sep"></span>${[25, 40, 63].map(a => `<button class="chip ${d.props.a === a ? 'on' : ''}" data-a="${a}">${a}</button>`).join('')}<span class="muted unit">А</span></div>`;
   }
   if (p.load && d.type !== 'floor') {
-    extra = `<label class="row-in"><span class="muted">${d.type.startsWith('sock') ? 'Включено в розетку, Вт' : 'Мощность, Вт'}</span><input class="inp" id="p-w" type="number" inputmode="numeric" min="0" step="100" value="${loadW(d)}"></label>`;
+    extra = `<label class="row-in"><span class="muted">${d.type.startsWith('sock') ? 'Нагрузка без прибора (чайник и т. п.), Вт' : 'Мощность, Вт'}</span><input class="inp" id="p-w" type="number" inputmode="numeric" min="0" step="100" value="${loadW(d)}"></label>`;
+    if (d.type.startsWith('sock')) {
+      const pl = cur.devices.filter(o => o.props.plug === d.id);
+      extra += `<div class="p-note">${pl.length ? 'Включено: ' + pl.map(o => `${PARTS[o.type].name} (${fmtW(loadW(o))})`).join(', ') : 'Чтобы включить прибор в розетку, перетащи его на розетку.'}</div>`;
+    }
+  }
+  if (p.pluggable) {
+    extra += d.props.plug && devById(d.props.plug)
+      ? '<div class="p-btns"><button class="btn" data-act="unplug">🔌 Вынуть из розетки</button></div>'
+      : '<div class="p-note">Перетащи прибор на розетку — он включится вилкой.</div>';
   }
   if (d.type === 'floor') {
     if (d.props.area == null) { d.props.area = Math.round(loadW(d) / 150 * 10) / 10; d.props.wpm = 150; }
@@ -597,6 +648,12 @@ function renderPanel() {
     extra = `<div class="chips"><span class="muted unit">Рядов</span>${[1, 2, 3, 4].map(v => `<button class="chip ${d.props.rows === v ? 'on' : ''}" data-rows="${v}">${v}</button>`).join('')}</div>
       <div class="chips"><span class="muted unit">Модулей в ряду</span>${[12, 18, 24].map(v => `<button class="chip ${d.props.mods === v ? 'on' : ''}" data-mods="${v}">${v}</button>`).join('')}</div>
       <div class="p-note">Поставь автомат внутрь щитка — он встанет на рейку. Тащи щиток — всё внутри поедет вместе с ним.</div>`;
+  }
+  if (p.comb) {
+    const cut = d.props.cut || [];
+    extra = `<div class="chips"><span class="muted unit">Зубьев</span>${[6, 12, 18, 24].map(v => `<button class="chip ${d.props.n === v ? 'on' : ''}" data-n="${v}">${v}</button>`).join('')}</div>
+      <div class="p-note">Положи гребёнку в щиток над автоматами — она встанет на верхние клеммы. Нажми на зуб ниже, чтобы отломать его (например, над нулём УЗО).</div>
+      <div class="chips teeth">${Array.from({ length: d.props.n }, (_, i) => `<button class="chip ${cut.includes(i) ? 'cut' : 'on'}" data-tooth="${i}" title="${p.comb === 3 ? 'L' + (i % 3 + 1) : ''}">${p.comb === 3 ? 'L' + (i % 3 + 1) : i + 1}</button>`).join('')}</div>`;
   }
   if (d.type === 'jbox') {
     extra = `<div class="chips">${[['S', 'Малая'], ['M', 'Средняя'], ['L', 'Большая']].map(([v, n]) => `<button class="chip ${d.props.size === v ? 'on' : ''}" data-size="${v}">${n}</button>`).join('')}</div>`;
@@ -645,9 +702,10 @@ $('#panel').onclick = e => {
   } else {
     const d = devById(sel.id);
     if (act === 'rot') { snapshot(); d.rot = ((d.rot || 0) + 1) % 4; }
+    else if (act === 'unplug') { snapshot(); delete d.props.plug; d.y += 60; }
     else if (act === 'dup') {
       snapshot();
-      const c = JSON.parse(JSON.stringify(d)); c.id = uid(); c.x += 40; c.y += 40;
+      const c = JSON.parse(JSON.stringify(d)); c.id = uid(); c.x += 40; c.y += 40; delete c.props.plug;
       if (PARTS[c.type].breaker || PARTS[c.type].rcd) c.state = { on: true };
       cur.devices.push(c); sel = { kind: 'dev', id: c.id };
     }
@@ -655,6 +713,12 @@ $('#panel').onclick = e => {
     else if (b.dataset.a) { snapshot(); d.props.a = +b.dataset.a; }
     else if (b.dataset.ma) { snapshot(); d.props.ma = +b.dataset.ma; }
     else if (b.dataset.wpm) { snapshot(); d.props.wpm = +b.dataset.wpm; d.props.w = Math.round(d.props.area * d.props.wpm); }
+    else if (b.dataset.n) { snapshot(); d.props.n = +b.dataset.n; d.props.cut = (d.props.cut || []).filter(i => i < d.props.n); snapToRail(d); }
+    else if (b.dataset.tooth) {
+      snapshot();
+      const i = +b.dataset.tooth, cut = d.props.cut || (d.props.cut = []), at = cut.indexOf(i);
+      if (at >= 0) cut.splice(at, 1); else cut.push(i);
+    }
     else if (b.dataset.rows) { snapshot(); d.props.rows = +b.dataset.rows; }
     else if (b.dataset.mods) { snapshot(); d.props.mods = +b.dataset.mods; }
     else if (b.dataset.size) { snapshot(); d.props.size = b.dataset.size; }
@@ -670,6 +734,7 @@ function deleteSel() {
   else {
     cur.devices = cur.devices.filter(d => d.id !== sel.id);
     cur.wires = cur.wires.filter(w => w.a.d !== sel.id && w.b.d !== sel.id);
+    for (const d of cur.devices) if (d.props.plug === sel.id) delete d.props.plug; // удалили розетку — вилки выпали
   }
   tidyTwists();
   sel = null;
@@ -800,11 +865,13 @@ function snapToRail(d) {
   const sh = cur.devices.find(b => b.type === 'shield' && boxContains(b, d.x, d.y));
   if (!sh) return;
   const [W] = shieldSize(sh), [bx] = PARTS[d.type].box(d);
-  const ry = shieldRails(sh).reduce((a, b) => (Math.abs(sh.y + b - d.y) < Math.abs(sh.y + a - d.y) ? b : a));
+  // гребёнка ложится на верхние клеммы (на 55 выше середины рейки)
+  const off = PARTS[d.type].comb ? -55 : 0;
+  const ry = shieldRails(sh).reduce((a, b) => (Math.abs(sh.y + b + off - d.y) < Math.abs(sh.y + a + off - d.y) ? b : a));
   const left = sh.x - W / 2 + 30, n = Math.max(0, Math.round((d.x + bx - left) / MOD));
   d.rot = 0;
   d.x = left + n * MOD - bx;
-  d.y = sh.y + ry;
+  d.y = sh.y + ry + off;
 }
 
 // коробка, внутри которой точка (для свободных концов)
@@ -838,7 +905,7 @@ function hitTest(x, y) {
   }
   // клеммы
   let best = null, bd = Math.max(16 / k, 9);
-  for (const d of cur.devices) for (const t of termsOf(d)) {
+  for (const d of cur.devices) if (!d.props.plug) for (const t of termsOf(d)) {
     const [tx, ty] = termPos(d, t), dd = Math.hypot(tx - x, ty - y);
     if (dd < bd) { bd = dd; best = { kind: 'term', d, t }; }
   }
@@ -846,7 +913,7 @@ function hitTest(x, y) {
     // палец не точно на клемме, а на корпусе маленького устройства с переключением (скрутка) — это нажатие на корпус
     if (bd > 7) for (const d of cur.devices) {
       const p = PARTS[d.type];
-      if (!p.toggle || p.isBox) continue;
+      if ((!p.toggle && !p.comb) || p.isBox) continue;
       const [lx, ly] = toLocal(d, x, y), [bx, by, bw, bh] = p.box(d);
       if (lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh) return { kind: 'dev', d, lx, ly };
     }
@@ -1020,7 +1087,8 @@ function endPointer(e) {
     render(); renderPanel();
     return;
   }
-  if (g.type === 'move' && g.items.length === 1 && PARTS[g.items[0].d.type].din) snapToRail(g.items[0].d);
+  if (g.type === 'move' && g.items.length === 1 && (PARTS[g.items[0].d.type].din || PARTS[g.items[0].d.type].comb)) snapToRail(g.items[0].d);
+  if (g.type === 'move' && g.items.length === 1 && PARTS[g.items[0].d.type].pluggable) tryPlug(g.items[0].d);
   if (g.type === 'move' || g.type === 'bend') touch();
   if (g.type === 'pan') saveView();
   render();

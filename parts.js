@@ -60,7 +60,7 @@ function socket(ip) {
 
 function appliance(name, w, icon) {
   return {
-    name, group: 'Техника', load: true,
+    name, group: 'Техника', load: true, pluggable: true, showName: true,
     init: { props: { w } },
     box: () => [-35, -36, 70, 72],
     terms: () => LNPE(46),
@@ -92,7 +92,7 @@ function module1(name, title, icon, switchable) {
 // датчик вне щита с тремя проводами: фаза, ноль, нагрузка (Н) — фотореле, датчик движения
 function sensor(name, icons, words) {
   return {
-    name, group: 'Свет и розетки',
+    name, group: 'Свет и розетки', showName: true,
     init: { state: { on: false } },
     box: () => [-30, -32, 60, 64],
     terms: () => [T('L', -20, 42, 'x', 'L'), T('N', 0, 42, 'N', 'N'), T('out', 20, 42, 'x', 'Н')],
@@ -103,6 +103,30 @@ function sensor(name, icons, words) {
       <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="16">${words[d.state.on ? 1 : 0]}</text>
       <rect class="strip" x="-30" y="22" width="60" height="10" rx="2"/>`,
     toggle: d => { d.state.on = !d.state.on; return true; }
+  };
+}
+
+// гребёнка: лежит на верхних клеммах автоматов, зуб соединяет клемму под собой (своих клемм нет — см. combTeeth в engine.js).
+// 1P — все зубья одна фаза, 3P — зубья по очереди L1, L2, L3. Зубья отламываются в панели (props.cut).
+function comb(phases) {
+  const toothX = (d, i) => -d.props.n * 18 + 18 + i * 36;
+  return {
+    name: phases === 3 ? 'Гребёнка 3P' : 'Гребёнка 1P', group: 'Щит и питание', comb: phases, noRotate: true, noLabel: true,
+    init: { props: { n: 12, cut: [] } },
+    toothX,
+    box: d => [-d.props.n * 18, -18, d.props.n * 36, 18],
+    terms: () => [],
+    conn: () => [],
+    draw: (d, h) => {
+      const n = d.props.n, cut = d.props.cut || [];
+      let s = `<rect class="comb" x="${-n * 18 + 4}" y="-18" width="${n * 36 - 8}" height="9" rx="2"/>
+        <text class="t-xs comb-t" x="${-n * 18 + 12}" y="-10.5" style="text-anchor:start">${phases === 3 ? '3P' : '1P'}</text>`;
+      for (let i = 0; i < n; i++) {
+        const x = toothX(d, i);
+        s += cut.includes(i) ? `<path class="tooth cut" d="M${x} -9 V-6"/>` : `<path class="tooth${h && h[i] ? ' hot' : ''}" d="M${x} -9 V-1"/>`;
+      }
+      return s;
+    }
   };
 }
 
@@ -222,28 +246,49 @@ const PARTS = {
     }
   },
 
-  rn: module1('Реле напряжения', 'РН', '<rect class="disp" x="-14" y="-12" width="28" height="16" rx="2"/><text class="t-xs disp-t" x="0" y="-1">220</text>', false),
-  wifi: module1('Wi-Fi реле', 'Wi-Fi', '<path d="M-11 -6 a16 16 0 0 1 22 0 M-7 -1 a10 10 0 0 1 14 0 M-3 4 a4 4 0 0 1 6 0"/><circle cx="0" cy="8" r="1.6"/>', true),
-
-  // цифровой таймер на 2 модуля, как в щите пользователя: экран со временем, кнопки, индикатор ВКЛ
-  tmr: {
-    name: 'Таймер', group: 'Щит и питание', din: true,
+  // реле напряжения на 2 модуля: фаза и ноль на входе (сверху) и на выходе (снизу), оба разрываются
+  rn: {
+    name: 'Реле напряжения', group: 'Щит и питание', din: true,
     init: { state: { on: true } },
     box: () => [-36, -45, 72, 90],
-    terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('out', -20, 55, 'x', '')],
-    conn: d => (d.state.on ? [['L', 'out']] : []),
-    closed: () => [['L', 'out']],
-    draw: d => {
+    terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('out', -20, 55, 'x', 'L'), T('Nout', 20, 55, 'N', 'N')],
+    conn: d => (d.state.on ? [['L', 'out'], ['N', 'Nout']] : []),
+    closed: () => [['L', 'out'], ['N', 'Nout']],
+    draw: (d, h) => `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
+      <path class="mod" d="M0 -45 V-30 M0 30 V45"/>
+      <text class="t-xs" x="0" y="-27">РЕЛЕ НАПР.</text>
+      <rect class="disp" x="-26" y="-18" width="52" height="24" rx="2"/>
+      <text class="disp-t big" x="0" y="0">${h && h.L ? '220' : '- - -'}</text>
+      <circle class="led${h && h.out ? ' on' : ''}" cx="-22" cy="18" r="3"/><text class="t-xs" x="-6" y="21">ВЫХ</text>`
+  },
+  wifi: module1('Wi-Fi реле', 'Wi-Fi', '<path d="M-11 -6 a16 16 0 0 1 22 0 M-7 -1 a10 10 0 0 1 14 0 M-3 4 a4 4 0 0 1 6 0"/><circle cx="0" cy="8" r="1.6"/>', true),
+
+  // таймер ТЭ15 на 2 модуля: сверху питание L и N, снизу «сухой» переключающий контакт НЗ – общий – НО.
+  // Фазу на общий заводят перемычкой от L. Включён: общий–НО, выключен: общий–НЗ.
+  tmr: {
+    name: 'Таймер ТЭ15', group: 'Щит и питание', din: true,
+    init: { state: { on: true } },
+    box: () => [-36, -45, 72, 90],
+    terms: () => [T('L', -20, -55, 'x', 'L'), T('N', 20, -55, 'N', 'N'), T('nc', -20, 55, 'x', 'НЗ'), T('com', 0, 55, 'x', 'О'), T('out', 20, 55, 'x', 'НО')],
+    conn: d => [['com', d.state.on ? 'out' : 'nc']],
+    closed: () => [['com', 'out', 'nc']],
+    draw: (d, h) => {
       const t = new Date(), hm = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+      const on = d.state.on, hot = hc(h, 'com');
       return `<rect class="body" x="-36" y="-45" width="72" height="90" rx="3"/>
-      <circle class="led${d.state.on ? ' on' : ''}" cx="-26" cy="-32" r="3"/><text class="t-xs" x="-12" y="-29">ВКЛ</text>
-      <rect class="lcd" x="-28" y="-24" width="56" height="20" rx="2"/><text class="lcd-t" x="0" y="-9">${hm}</text>
-      ${[-22, -7, 8, 23].map(x => `<rect class="kbtn" x="${x - 5}" y="2" width="10" height="7" rx="1.5"/>`).join('')}
-      <rect class="kbtn" x="-27" y="15" width="22" height="7" rx="1.5"/><rect class="kbtn" x="5" y="15" width="22" height="7" rx="1.5"/>
-      <text class="t-xs st${d.state.on ? ' on' : ''}" x="0" y="37">${d.state.on ? 'ВКЛ' : 'ОТКЛ'}</text>`;
+      <circle class="led${on ? ' on' : ''}" cx="-27" cy="-33" r="3"/><text class="t-xs" x="-14" y="-30">ВКЛ</text>
+      <text class="t-xs" x="18" y="-30">ТЭ15</text>
+      <rect class="lcd" x="-28" y="-25" width="56" height="20" rx="2"/><text class="lcd-t" x="0" y="-10">${hm}</text>
+      ${[-24, -12, 0, 12, 24].map(x => `<rect class="kbtn" x="${x - 4.5}" y="-1" width="9" height="6" rx="1.5"/>`).join('')}
+      <path class="ct${hc(h, 'nc')}" d="M-20 14 V30"/><path class="ct${hot}" d="M0 24 V30"/><path class="ct${hc(h, 'out')}" d="M20 14 V30"/>
+      ${blade(0, 24, on ? 20 : -20, 14, hot)}
+      <circle class="pv" cx="0" cy="24" r="2.5"/><circle class="cp" cx="-20" cy="14" r="2"/><circle class="cp" cx="20" cy="14" r="2"/>`;
     },
     toggle: d => { d.state.on = !d.state.on; return true; }
   },
+
+  comb1: comb(1),
+  comb3: comb(3),
 
   busN: bus('N'),
   busPE: bus('PE'),
@@ -339,7 +384,7 @@ const PARTS = {
   },
 
   flood: {
-    name: 'Прожектор', group: 'Свет и розетки', load: true, light: true,
+    name: 'Прожектор', group: 'Свет и розетки', load: true, light: true, showName: true,
     init: { props: { w: 50 } },
     box: () => [-30, -32, 60, 64],
     terms: () => LNPE(42),
