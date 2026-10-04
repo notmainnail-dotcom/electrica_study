@@ -86,6 +86,29 @@ section { position: fixed; inset: 0; display: flex; flex-direction: column; }
   border: 0; background: var(--acc); color: var(--acc-ink); font-weight: 650; padding: 14px 26px; border-radius: 999px; box-shadow: var(--shadow);
 }
 
+/* вкладки и теория */
+.tabs { display: flex; gap: 6px; padding: 10px 16px 0; max-width: 720px; width: 100%; margin: 0 auto; flex: none; }
+.tab { flex: 1; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; height: 40px; font-weight: 600; color: var(--muted); }
+.tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+#theory { flex: 1; overflow: auto; padding: 16px 16px 40px; max-width: 720px; width: 100%; margin: 0 auto; }
+.th-card { display: block; width: 100%; text-align: left; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 10px; }
+.th-card:hover { border-color: var(--acc); }
+.th-card b { display: block; }
+.th-card span { color: var(--muted); font-size: 13px; }
+.th-art { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; line-height: 1.55; }
+.th-art h2 { margin: 0 0 12px; font-size: 21px; }
+.th-art h4 { margin: 18px 0 6px; }
+.th-art ul, .th-art ol { padding-left: 20px; }
+.th-art li { margin: 4px 0; }
+.th-box { background: var(--dev-soft); border-left: 4px solid var(--w-blue); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+.th-box.warn { border-left-color: var(--hot); }
+.th-t { border-collapse: collapse; width: 100%; font-size: 14px; margin: 10px 0; }
+.th-t th, .th-t td { border-bottom: 1px solid var(--line); padding: 6px 6px; text-align: left; }
+.th-t th { color: var(--muted); font-weight: 600; }
+.th-try { margin-top: 14px; background: var(--acc-soft); border-radius: 10px; padding: 10px 12px; }
+.th-back { border: 0; background: transparent; color: var(--acc); font-weight: 600; padding: 4px 0 12px; }
+.th-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+
 /* редактор */
 #cv-wrap {
   position: relative; flex: 1; overflow: hidden; touch-action: none;
@@ -216,6 +239,9 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 .disp-t { fill: #4BE38A; font-family: ui-monospace, Consolas, monospace; }
 .disp-t.big { font-size: 15px; font-weight: 700; }
 .disp-t.bad { fill: #FF5A4E; }
+.nbreak { stroke: var(--hot); stroke-width: 3; stroke-linecap: round; }
+.burnt { opacity: .55; }
+.burnt-x { stroke: var(--hot); stroke-width: 3; stroke-linecap: round; }
 .muted-t { fill: var(--muted); }
 .warn-t { fill: var(--hot); }
 .tbtn { fill: var(--dev-soft); stroke: var(--dev-line); stroke-width: 1; }
@@ -310,7 +336,12 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
     <div class="brand">⚡ Электро<b>лаба</b></div>
     <button class="ib" id="btn-settings" aria-label="Настройки">⚙</button>
   </header>
+  <div class="tabs" role="tablist">
+    <button class="tab on" data-tab="list" role="tab">Схемы</button>
+    <button class="tab" data-tab="theory" role="tab">📖 Теория</button>
+  </div>
   <main id="list"></main>
+  <main id="theory" hidden></main>
   <button class="fab" id="btn-new">＋ Новая схема</button>
 </section>
 
@@ -342,6 +373,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
     <button class="tb" id="btn-meter" title="Мультиметр" aria-label="Мультиметр">
       <svg width="20" height="22" viewBox="0 0 20 22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="2" y="1" width="16" height="20" rx="3"/><rect x="5" y="4" width="10" height="6" rx="1"/><circle cx="10" cy="15" r="3"/></svg>
     </button>
+    <button class="tb" id="btn-quest" title="Найди неисправность" aria-label="Найди неисправность">🔧</button>
     <span class="grow"></span>
     <button class="tb zoom" id="btn-zout" aria-label="Уменьшить">−</button>
     <button class="tb zoom" id="btn-zin" aria-label="Увеличить">＋</button>
@@ -355,6 +387,7 @@ svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 <script src="parts.js"></script>
 <script src="engine.js"></script>
 <script src="rules.js"></script>
+<script src="theory.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -68,12 +68,14 @@ function nets(sc, closed, off) {
   };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra && rb && ra !== rb) parent.set(ra, rb); };
   for (const d of sc.devices) for (const t of termsOf(d)) add(tkey(d.id, t.id));
+  // sc._fault — скрытая неисправность в режиме «Найди неисправность» (не сохраняется): { wire } или { dev }
+  const fault = closed ? null : sc._fault;
   for (const d of sc.devices) {
     const p = PARTS[d.type];
-    const groups = closed && p.closed ? p.closed(d) : off && off.has(d.id) ? (p.connOff ? p.connOff(d) : []) : p.conn(d);
+    const groups = fault && fault.dev === d.id ? [] : closed && p.closed ? p.closed(d) : off && off.has(d.id) ? (p.connOff ? p.connOff(d) : []) : p.conn(d);
     for (const g of groups) for (let i = 1; i < g.length; i++) union(tkey(d.id, g[0]), tkey(d.id, g[i]));
   }
-  for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
+  for (const w of sc.wires) if (!isFree(w.a) && !isFree(w.b) && !(fault && fault.wire === w.id)) union(tkey(w.a.d, w.a.t), tkey(w.b.d, w.b.t));
   // прибор, включённый вилкой в розетку: его L, N, PE соединены с клеммами розетки
   for (const d of sc.devices) {
     if (!d.props || !d.props.plug || !sc.devices.some(o => o.id === d.props.plug)) continue;
@@ -129,12 +131,13 @@ function loadStatus(a, b) {
 // напряжение в сети (задаётся на вводе, по умолчанию 220)
 const netU = sc => sc.devices.find(d => d.type === 'src' || d.type === 'src3')?.props.u ?? 220;
 
-// есть ли питание у реле, таймера, датчика: на L фаза, на N ноль; у реле напряжения ещё и напряжение в пределах уставок
+// есть ли питание у реле, таймера, датчика: напряжение между L и N (с учётом перекоса при обрыве нуля);
+// реле напряжения включается только в пределах уставок, остальным хватает 150 В
 function supplyOk(sc, s, d) {
-  const l = s.cls(tkey(d.id, 'L')), n = s.cls(tkey(d.id, 'N'));
-  if (!isHot(l) || (n !== 'N' && n !== 'PE')) return false;
-  if (d.type === 'rn') { const u = netU(sc); return u >= d.props.umin && u <= d.props.umax; }
-  return true;
+  const u = s.uAcross(tkey(d.id, 'L'), tkey(d.id, 'N'));
+  if (u == null) return false;
+  if (d.type === 'rn') return u >= d.props.umin && u <= d.props.umax;
+  return u >= 150;
 }
 
 // расчёт при поданном питании (closed — см. nets).
@@ -143,8 +146,17 @@ function supplyOk(sc, s, d) {
 function simulate(sc, closed) {
   const sup = closed ? [] : sc.devices.filter(d => PARTS[d.type].supply);
   let off = new Set(sup.map(d => d.id)), res = simulateOnce(sc, closed, off);
-  for (let i = 0; i <= sup.length; i++) {
-    const next = new Set(sup.filter(d => !supplyOk(sc, res, d)).map(d => d.id));
+  // реле напряжения, которое включилось и тут же увидело плохое напряжение (перекос после подключения нагрузки),
+  // остаётся отключённым — иначе расчёт «дребезжит» (в жизни реле ждёт задержку и снова отключается)
+  const latched = new Set();
+  for (let i = 0; i <= sup.length + 1; i++) {
+    const next = new Set();
+    for (const d of sup) {
+      if (latched.has(d.id) || !supplyOk(sc, res, d)) {
+        next.add(d.id);
+        if (d.type === 'rn' && !off.has(d.id)) latched.add(d.id);
+      }
+    }
     if (next.size === off.size && [...next].every(id => off.has(id))) break;
     off = next;
     res = simulateOnce(sc, closed, off);
@@ -160,7 +172,10 @@ function simulateOnce(sc, closed, off) {
   for (const d of sc.devices) {
     if (d.type === 'src') mark(tkey(d.id, 'L'), 'L1');
     if (d.type === 'src3') PHASES.forEach(p => mark(tkey(d.id, p), p));
-    if (d.type === 'src' || d.type === 'src3') { mark(tkey(d.id, 'N'), 'N'); mark(tkey(d.id, 'PE'), 'PE'); }
+    if (d.type === 'src' || d.type === 'src3') {
+      if (!d.props.nbreak) mark(tkey(d.id, 'N'), 'N'); // обрыв нуля на вводе: ноль от подстанции не пришёл
+      mark(tkey(d.id, 'PE'), 'PE');
+    }
   }
   // КЗ: фаза встретилась с другой фазой, нулём или землёй
   let short = false;
@@ -175,12 +190,47 @@ function simulateOnce(sc, closed, off) {
   };
   const loads = new Map();
   let hot = 0;
+  const dead = d => d.state.burnt || (!closed && sc._fault && sc._fault.dev === d.id);
   for (const d of sc.devices) {
     for (const t of termsOf(d)) if (isHot(cls(tkey(d.id, t.id)))) hot++;
     if (PARTS[d.type].load) loads.set(d.id, loadStatus(cls(tkey(d.id, 'L')), cls(tkey(d.id, 'N'))));
   }
+
+  // Обрыв нуля: нагрузки разных фаз, чьи нули сходятся в узле без нуля, оказываются последовательно между фазами.
+  // Напряжение «плавающей» нейтрали: Vn = Σ(Y·E) / ΣY, где Y = P/U² — проводимость нагрузки, E — вектор фазы.
+  // На нагрузке |E − Vn|: на слабо нагруженной фазе выходит до 380 В, на сильно нагруженной — мало.
+  const E = netU(sc), A = 2 * Math.PI / 3;
+  const PH = { L1: [E, 0], L2: [E * Math.cos(-A), E * Math.sin(-A)], L3: [E * Math.cos(A), E * Math.sin(A)] };
+  const groups = new Map();
+  for (const d of sc.devices) {
+    if (!PARTS[d.type].load) continue;
+    const kL = tkey(d.id, 'L'), kN = tkey(d.id, 'N'), a = cls(kL), b = cls(kN);
+    const [ph, other] = isHot(a) && b == null ? [a, kN] : isHot(b) && a == null ? [b, kL] : [null];
+    if (!ph) continue;
+    const r = find(other);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push({ d, ph });
+  }
+  const vn = new Map();
+  for (const [r, list] of groups) {
+    let x = 0, y = 0, sum = 0;
+    for (const { d, ph } of list) { if (dead(d)) continue; const g = loadW(d) / (VOLT * VOLT); x += g * PH[ph][0]; y += g * PH[ph][1]; sum += g; }
+    if (!sum) continue;
+    const V = [x / sum, y / sum];
+    vn.set(r, V);
+    for (const { d, ph } of list) {
+      const u = Math.round(Math.hypot(PH[ph][0] - V[0], PH[ph][1] - V[1]));
+      if (u > 5) loads.set(d.id, { st: 'float', ph, u });
+    }
+  }
+  // сгоревшая техника и скрытая неисправность прибора: напряжение есть, а не работает
+  for (const d of sc.devices) if (PARTS[d.type].load && dead(d)) loads.set(d.id, { st: d.state.burnt ? 'burnt' : 'dead' });
+
+  // вектор потенциала узла и напряжение между двумя точками (для мультиметра, реле и т. п.)
+  const vOf = k => { const c = cls(k); if (isHot(c)) return PH[c]; if (c === 'N' || c === 'PE') return [0, 0]; return vn.get(find(k)) || null; };
+  const uAcross = (k1, k2) => { const a = vOf(k1), b = vOf(k2); return a && b ? Math.round(Math.hypot(a[0] - b[0], a[1] - b[1])) : null; };
   const marksOf = k => marks.get(find(k)) || new Set();
-  return { short, cls, loads, hot, marksOf };
+  return { short, cls, loads, hot, marksOf, uAcross };
 }
 
 // ток по каждому проводу, А: убираем провод — нагрузки, которые от этого перестали работать, питались через него

@@ -46,7 +46,7 @@ function checkScheme(sc, powered) {
     });
     const kindOf = e => { if (isFree(e)) return null; const d = dev(e.d); return d && termsOf(d).find(t => t.id === e.t)?.kind; };
     const direct = bridges.filter(w => [kindOf(w.a), kindOf(w.b)].sort().join() === 'N,PE');
-    add('err', '7.1.36', 'Ноль (N) и земля (PE) соединены между собой. После ввода это разные проводники, объединять их нельзя', (direct.length ? direct : bridges).map(w => ({ kind: 'wire', id: w.id })));
+    add('err', '1.7.135', 'Ноль (N) и земля (PE) соединены между собой. После ввода это разные проводники, объединять их нельзя', (direct.length ? direct : bridges).map(w => ({ kind: 'wire', id: w.id })));
   }
 
   // цвета жил

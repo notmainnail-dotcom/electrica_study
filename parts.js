@@ -158,7 +158,8 @@ const PARTS = {
     conn: () => [],
     draw: d => `<rect class="body" x="-60" y="-30" width="120" height="60" rx="6"/>
       <path class="bolt" d="M-36 -20 L-46 0 H-38 L-43 16 L-28 -6 H-36 L-30 -20Z"/>
-      <text class="t-m" x="12" y="-3">ВВОД</text><text class="t-s${(d.props.u ?? 220) !== 220 ? ' warn-t' : ''}" x="12" y="11">~${d.props.u ?? 220} В</text>`
+      <text class="t-m" x="12" y="-3">ВВОД</text><text class="t-s${(d.props.u ?? 220) !== 220 ? ' warn-t' : ''}" x="12" y="11">~${d.props.u ?? 220} В</text>
+      ${d.props.nbreak ? '<path class="nbreak" d="M-6 30 L6 38 M6 30 L-6 38"/><text class="t-xs warn-t" x="34" y="-18">обрыв N</text>' : ''}`
   },
 
   src3: {
@@ -170,7 +171,8 @@ const PARTS = {
       const u = d.props.u ?? 220;
       return `<rect class="body" x="-80" y="-30" width="160" height="60" rx="6"/>
       <path class="bolt" d="M-52 -20 L-62 0 H-54 L-59 16 L-44 -6 H-52 L-46 -20Z"/>
-      <text class="t-m" x="14" y="-3">ВВОД 3Ф</text><text class="t-s${u !== 220 ? ' warn-t' : ''}" x="14" y="11">~${Math.round(u * Math.sqrt(3))}/${u} В</text>`;
+      <text class="t-m" x="14" y="-3">ВВОД 3Ф</text><text class="t-s${u !== 220 ? ' warn-t' : ''}" x="14" y="11">~${Math.round(u * Math.sqrt(3))}/${u} В</text>
+      ${d.props.nbreak ? '<path class="nbreak" d="M24 30 L36 38 M36 30 L24 38"/><text class="t-xs warn-t" x="54" y="-18">обрыв N</text>' : ''}`;
     }
   },
 

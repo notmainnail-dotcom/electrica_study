@@ -82,6 +82,7 @@ function actions(title, items) {
 
 // ---------- список схем ----------
 function showList() {
+  if (quest) endQuest();
   if (cur) { cur.view = { ...view }; saveNow(); }
   cur = null; power = false;
   $('#scr-ed').hidden = true; $('#scr-list').hidden = false;
@@ -134,6 +135,32 @@ function schemeMenu(id) {
   ]);
 }
 
+// ---------- вкладки «Схемы» и «Теория» ----------
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  $('#list').hidden = tab !== 'list';
+  $('#theory').hidden = tab !== 'theory';
+  $('#btn-new').hidden = tab !== 'list';
+  if (tab === 'theory') renderTheory();
+}
+document.querySelectorAll('.tab').forEach(b => (b.onclick = () => showTab(b.dataset.tab)));
+
+function renderTheory(id) {
+  const el = $('#theory');
+  const i = THEORY.findIndex(t => t.id === id);
+  if (i < 0) {
+    el.innerHTML = THEORY.map(t => `<button class="th-card" data-th="${t.id}"><b>${esc(t.title)}</b><span>${esc(t.sub)}</span></button>`).join('');
+  } else {
+    const t = THEORY[i], prev = THEORY[i - 1], next = THEORY[i + 1];
+    el.innerHTML = `<button class="th-back" data-th="">‹ Все темы</button>
+      <article class="th-art"><h2>${esc(t.title)}</h2>${t.html}
+      ${t.try ? `<div class="th-try"><b>Попробуй в лабе:</b> ${esc(t.try)}</div>` : ''}</article>
+      <div class="th-nav">${prev ? `<button class="btn" data-th="${prev.id}">‹ ${esc(prev.title)}</button>` : '<span></span>'}${next ? `<button class="btn" data-th="${next.id}">${esc(next.title)} ›</button>` : ''}</div>`;
+  }
+  el.scrollTop = 0;
+}
+$('#theory').onclick = e => { const b = e.target.closest('[data-th]'); if (b) renderTheory(b.dataset.th); };
+
 // ---------- настройки и резервная копия ----------
 $('#btn-settings').onclick = () => {
   const themes = [['auto', 'Как в системе'], ['light', 'Светлая'], ['dark', 'Тёмная']];
@@ -178,6 +205,7 @@ let sim = null;
 let hist = [], fut = [];
 let issues = [], issuesSig = '', showIssues = false; // проверка по ПУЭ
 let meter = null;             // мультиметр: { a, b } — точки щупов (клемма {d,t} или конец провода {w,side})
+let quest = null;             // «Найди неисправность»: { kind, id, desc, tries, t0 }; сама поломка — в cur._fault (не сохраняется)
 
 const devById = id => cur.devices.find(d => d.id === id);
 const wireById = id => cur.wires.find(w => w.id === id);
@@ -191,7 +219,7 @@ function openScheme(id) {
     for (const [k, v] of Object.entries(init.state || {})) if (d.state[k] === undefined) d.state[k] = v;
   }
   hist = []; fut = []; sel = null; pending = null; rubber = null; power = false;
-  showIssues = false; meter = null; issuesSig = '';
+  showIssues = false; meter = null; issuesSig = ''; quest = null;
   $('#scr-list').hidden = true; $('#scr-ed').hidden = false;
   $('#ed-name').textContent = cur.name;
   requestAnimationFrame(() => {
@@ -219,8 +247,8 @@ function restore(json) {
   pending = null;
   touch(); evaluatePower(); render(); renderPanel();
 }
-function undo() { if (!hist.length) return; fut.push(JSON.stringify({ devices: cur.devices, wires: cur.wires })); restore(hist.pop()); }
-function redo() { if (!fut.length) return; hist.push(JSON.stringify({ devices: cur.devices, wires: cur.wires })); restore(fut.pop()); }
+function undo() { if (!hist.length || quest) return; fut.push(JSON.stringify({ devices: cur.devices, wires: cur.wires })); restore(hist.pop()); }
+function redo() { if (!fut.length || quest) return; hist.push(JSON.stringify({ devices: cur.devices, wires: cur.wires })); restore(fut.pop()); }
 $('#btn-undo').onclick = undo;
 $('#btn-redo').onclick = redo;
 
@@ -252,7 +280,15 @@ function evaluatePower() {
         continue;
       }
       const r = findLeak(cur);
-      if (!r) return;
+      if (!r) {
+        // перенапряжение при обрыве нуля: техника и лампы выше 270 В сгорают (розетка сама не горит)
+        const fried = cur.devices.filter(d => { const l = s.loads.get(d.id); return l && l.st === 'float' && l.u > 270 && !d.type.startsWith('sock'); });
+        if (!fried.length) return;
+        for (const d of fried) d.state.burnt = true;
+        touch();
+        toast(`Обрыв нуля! ${fried.map(d => `${PARTS[d.type].name} — ${s.loads.get(d.id).u} В`).join(', ')}. Сгорело. Защитило бы реле напряжения`);
+        continue;
+      }
       r.state.on = false; r.state.trip = true; touch();
       toast(`Сработало УЗО ${r.props.ma} мА${r.props.label ? ' «' + r.props.label + '»' : ''}: ток ушёл мимо его нуля — через PE или ноль другой группы`);
       continue;
@@ -275,14 +311,16 @@ function devSvg(d) {
   const h = {};
   if (sim) for (const t of p.terms(d)) h[t.id] = isHot(sim.cls(tkey(d.id, t.id)));
   if (sim && p.comb) for (const t of combTeeth(cur, d)) h[t.i] = t.keys.some(k => isHot(sim.cls(k)));
-  const ok = !!(sim && sim.loads.get(d.id)?.st === 'ok');
+  const r = sim && sim.loads.get(d.id);
+  // при перекосе (обрыв нуля) прибор работает, если напряжения хватает
+  const ok = !!r && (r.st === 'ok' || (r.st === 'float' && r.u >= 150));
   const s = { lit: ok && !!PARTS[d.type].light, live: ok && d.type.startsWith('sock'), on: ok };
   if (sim && d.type === 'rn') {
-    // реле показывает напряжение, только если к нему пришли и фаза, и ноль
-    const n = sim.cls(tkey(d.id, 'N'));
-    s.u = isHot(sim.cls(tkey(d.id, 'L'))) && (n === 'N' || n === 'PE') ? netU(cur) : null;
+    // реле показывает напряжение между своими L и N (с учётом перекоса), если к нему пришли и фаза, и ноль
+    s.u = isHot(sim.cls(tkey(d.id, 'L'))) ? sim.uAcross(tkey(d.id, 'L'), tkey(d.id, 'N')) : null;
   }
-  return `<g transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}</g>`;
+  const burnt = d.state.burnt ? '<path class="burnt-x" d="M-22 -22 L22 22 M22 -22 L-22 22"/>' : '';
+  return `<g class="${d.state.burnt ? 'burnt' : ''}" transform="translate(${d.x} ${d.y}) rotate(${(d.rot || 0) * 90})">${p.draw(d, h, s)}${burnt}</g>`;
 }
 
 const samePend = (e) => pending && (isFree(pending) ? pending.w === e.w && pending.side === e.side : pending.d === e.d && pending.t === e.t);
@@ -334,7 +372,17 @@ function loadText(d) {
   const three = cur.devices.some(o => o.type === 'src3');
   const ph = three && r.ph ? ' · ' + r.ph : '';
   const sw = d.type.startsWith('sock') ? socketW(d) : 0, sockW = sw ? ' · ' + fmtW(sw) : '';
-  if (r.st === 'ok') return { cls: 'ok', t: (PARTS[d.type].light ? 'горит' : d.type.startsWith('sock') ? '220 В' + sockW : 'работает') + ph };
+  const works = PARTS[d.type].light ? 'горит' : d.type.startsWith('sock') ? '220 В' + sockW : 'работает';
+  // в режиме «Найди неисправность» не подсказываем причину: только работает или нет
+  if (quest) return r.st === 'ok' || (r.st === 'float' && r.u >= 150) ? { cls: 'ok', t: works } : { cls: 'off', t: PARTS[d.type].light ? 'не горит' : 'не работает' };
+  if (r.st === 'burnt') return { cls: 'bad', t: 'сгорел — замени в панели' };
+  if (r.st === 'dead') return { cls: 'off', t: 'не работает' };
+  if (r.st === 'float') {
+    if (r.u > 250) return { cls: 'bad', t: `⚡ ${r.u} В — перенапряжение` + ph };
+    if (r.u < 190) return { cls: 'warn', t: `${r.u} В — мало` + ph };
+    return { cls: 'ok', t: `${r.u} В · перекос` + ph };
+  }
+  if (r.st === 'ok') return { cls: 'ok', t: works + ph };
   if (r.st === '380') return { cls: 'bad', t: '380 В! Между фазами' };
   if (r.st === 'nozero') return { cls: 'warn', t: 'нет нуля' + ph };
   return { cls: 'off', t: 'нет фазы' };
@@ -472,8 +520,12 @@ function render() {
   pb.title = power ? 'Снять питание' : 'Подать питание';
   const errs = issues.filter(i => i.lvl === 'err').length, warns = issues.length - errs;
   const cb = $('#btn-check');
-  cb.textContent = issues.length ? `⚠ ${issues.length}` : '✓';
-  cb.className = 'tb chk' + (errs ? ' err' : warns ? ' warn' : '') + (showIssues ? ' on' : '');
+  cb.textContent = quest ? '✓' : issues.length ? `⚠ ${issues.length}` : '✓';
+  cb.className = 'tb chk' + (quest ? '' : errs ? ' err' : warns ? ' warn' : '') + (showIssues ? ' on' : '');
+  cb.disabled = !!quest;
+  $('#btn-quest').classList.toggle('on', !!quest);
+  $('#btn-undo').disabled = !hist.length || !!quest;
+  $('#btn-redo').disabled = !fut.length || !!quest;
   cb.title = issues.length ? `Проверка по ПУЭ: ошибок ${errs}, замечаний ${warns}` : 'Проверка по ПУЭ: замечаний нет';
   $('#btn-meter').classList.toggle('on', !!meter);
   renderHint();
@@ -484,6 +536,7 @@ function render() {
 // ---------- проверка по ПУЭ ----------
 // пересчитываем, только когда изменилось что-то кроме положения устройств на поле
 function updateIssues() {
+  if (quest) return;
   const sig = JSON.stringify([power, cur.devices.map(d => [d.id, d.type, d.state, d.props, PARTS[d.type].isBox || d.type === 'twist' || d.type.startsWith('wago') ? [d.x, d.y] : 0]),
     cur.wires.map(w => [w.a, w.b, w.color, w.sec])]);
   if (sig === issuesSig) return;
@@ -522,6 +575,7 @@ function renderIssues() {
 }
 
 $('#btn-check').onclick = () => {
+  if (quest) { toast('Во время поиска неисправности проверка выключена — ищи сам 🙂'); return; }
   showIssues = !showIssues;
   if (showIssues) { sel = null; pending = null; }
   $('#issues').hidden = !showIssues;
@@ -540,6 +594,107 @@ $('#issues').onclick = e => {
   sel = { kind: t.kind, id: t.id };
   render();
 };
+
+// ---------- «Найди неисправность» ----------
+const setFault = f => Object.defineProperty(cur, '_fault', { value: f, writable: true, configurable: true, enumerable: false });
+const working = s => new Set([...s.loads].filter(([, r]) => r.st === 'ok' || (r.st === 'float' && r.u >= 150)).map(([id]) => id));
+
+// что сломать: элемент, без которого перестаёт работать хотя бы одна работающая сейчас нагрузка
+function faultCandidates() {
+  const was = working(simulate(cur));
+  if (!was.size) return [];
+  const out = [];
+  const test = f => {
+    setFault(f);
+    const now = working(simulate(cur));
+    setFault(null);
+    const lost = [...was].filter(id => !now.has(id));
+    return lost.length ? lost : null;
+  };
+  for (const w of cur.wires) {
+    if (isFree(w.a) || isFree(w.b)) continue;
+    const lost = test({ wire: w.id });
+    if (lost) out.push({ f: { wire: w.id }, kind: 'wire', id: w.id, lost });
+  }
+  for (const d of cur.devices) {
+    const p = PARTS[d.type];
+    if (d.type === 'src' || d.type === 'src3' || p.isBox || p.node || p.comb) continue;
+    if (!p.load && !p.conn(d).length) continue;
+    const lost = test({ dev: d.id });
+    if (lost) out.push({ f: { dev: d.id }, kind: 'dev', id: d.id, lost });
+  }
+  return out;
+}
+
+function faultText(c) {
+  if (c.kind === 'wire') {
+    const w = wireById(c.id), ends = [w.a, w.b].map(e => { const d = devById(e.d); return PARTS[d.type].name.toLowerCase() + (d.props.label ? ' «' + d.props.label + '»' : ''); });
+    return (Math.random() < 0.5 ? 'Обрыв провода внутри изоляции' : 'Не затянута клемма — провод не держит контакт') + ` (провод между: ${ends.join(' и ')})`;
+  }
+  const d = devById(c.id), p = PARTS[d.type];
+  if (p.light) return 'Перегорела лампа';
+  if (d.type.startsWith('sock')) return 'Розетка: подгорел контакт гнезда — на клеммах 220 есть, а в гнёздах нет';
+  if (p.load) return `${p.name}: внутренний обрыв, прибор не работает`;
+  if (p.breaker || p.rcd) return `${p.name}: включён, но внутри подгорел контакт — не пропускает ток`;
+  if (d.type.startsWith('wago')) return 'Wago: провод не дожат в клемму';
+  if (d.type.startsWith('bus')) return `${p.name}: не затянут винт`;
+  return `${p.name}: контакт выгорел, не замыкает`;
+}
+
+function startQuest() {
+  const cands = faultCandidates();
+  if (!cands.length) { toast('Нужна схема, где что-то работает: подай питание, включи выключатели — потом начинай поиск'); return; }
+  const c = cands[Math.floor(Math.random() * cands.length)];
+  setFault(c.f);
+  quest = { kind: c.kind, id: c.id, desc: faultText(c), lost: c.lost, tries: 0, t0: Date.now() };
+  showIssues = false; $('#issues').hidden = true; sel = null; pending = null;
+  evaluatePower(); render(); renderPanel();
+  openModal(`<h3>🔧 Найди неисправность</h3>
+    <p>Я незаметно сломал один элемент схемы: провод, клемму, автомат, выключатель или прибор. Внешне ничего не изменилось.</p>
+    <p class="muted">Подай питание, посмотри, что не работает, и найди место мультиметром — как на объекте. Схему менять нельзя, выключатели и автоматы щёлкать можно. Нашёл — нажми на провод или устройство и «Неисправность здесь».</p>
+    <div class="row-btns"><button class="btn primary" data-close>Искать</button></div>`, sh => { sh.querySelector('[data-close]').onclick = closeModal; });
+}
+
+function endQuest() {
+  if (cur) setFault(null);
+  quest = null;
+  if (cur) { evaluatePower(); render(); renderPanel(); }
+}
+
+function guessFault() {
+  if (!quest || !sel) return;
+  if (sel.kind === quest.kind && sel.id === quest.id) {
+    const min = Math.max(1, Math.round((Date.now() - quest.t0) / 60000)), tries = quest.tries + 1, desc = quest.desc;
+    endQuest();
+    openModal(`<h3>✅ Нашёл!</h3><p><b>${esc(desc)}</b></p>
+      <p class="muted">Время: ${min} мин, попыток: ${tries}.</p>
+      <div class="row-btns"><button class="btn" data-close>Закрыть</button><button class="btn primary" data-again>Ещё раз</button></div>`, sh => {
+      sh.querySelector('[data-close]').onclick = closeModal;
+      sh.querySelector('[data-again]').onclick = () => { closeModal(); startQuest(); };
+    });
+    return;
+  }
+  quest.tries++;
+  toast(`Здесь всё исправно. Ищи дальше (попыток: ${quest.tries})`);
+}
+
+function questMenu() {
+  const lostNames = quest.lost.map(id => devById(id)).filter(Boolean).map(d => PARTS[d.type].name.toLowerCase() + (d.props.label ? ' «' + d.props.label + '»' : ''));
+  actions('Поиск неисправности', [
+    { label: 'Подсказка', fn: () => toast(`Не работает: ${lostNames.join(', ')}. Неисправен ${quest.kind === 'wire' ? 'провод или клемма' : 'какой-то элемент'} на пути к ${lostNames.length > 1 ? 'ним' : 'нему'}. Мерь напряжение от автомата к нагрузке`) },
+    { label: 'Сдаюсь — показать', fn: () => {
+      const t = { kind: quest.kind, id: quest.id }, desc = quest.desc;
+      endQuest();
+      sel = t; const p = targetPoint(t), r = cv.getBoundingClientRect();
+      if (p) { view.x = p[0] - r.width / 2 / view.k; view.y = p[1] - r.height / 3 / view.k; }
+      render();
+      openModal(`<h3>Неисправность была здесь</h3><p><b>${esc(desc)}</b></p><p class="muted">Она подсвечена на схеме.</p><div class="row-btns"><button class="btn primary" data-close>Понятно</button></div>`, sh => { sh.querySelector('[data-close]').onclick = closeModal; });
+    } },
+    { label: 'Выйти из режима', fn: () => endQuest() }
+  ]);
+}
+
+$('#btn-quest').onclick = () => (quest ? questMenu() : startQuest());
 
 // ---------- мультиметр ----------
 $('#btn-meter').onclick = () => {
@@ -570,11 +725,12 @@ function meterReading() {
   const ka = ptKey(a), kb = ptKey(b);
   if (power) {
     const s = simulate(cur), ca = ka && s.cls(ka), cb = kb && s.cls(kb);
+    const u = ka && kb ? s.uAcross(ka, kb) : null;
     const zero = c => c === 'N' || c === 'PE';
-    if (isHot(ca) && isHot(cb)) return ca === cb ? { v: '0 В', t: `Одна и та же фаза ${ca}` } : { v: '380 В', t: `Между фазами ${ca} и ${cb}` };
-    if ((isHot(ca) && zero(cb)) || (isHot(cb) && zero(ca))) return { v: '220 В', t: `Фаза ${isHot(ca) ? ca : cb} и ${zero(ca) ? ca : cb}` };
-    if (isHot(ca) || isHot(cb)) return { v: '0 В', t: 'Один щуп на фазе, второй ни к чему не подключён' };
-    return { v: '0 В', t: 'Напряжения нет' };
+    const name = c => (isHot(c) ? 'фаза ' + c : zero(c) ? c : 'оборванный ноль');
+    if (u == null) return { v: '0 В', t: isHot(ca) || isHot(cb) ? 'Один щуп на фазе, второй ни к чему не подключён' : 'Напряжения нет' };
+    if (isHot(ca) && isHot(cb) && ca === cb) return { v: '0 В', t: `Одна и та же фаза ${ca}` };
+    return { v: u + ' В', t: `${name(ca)[0].toUpperCase() + name(ca).slice(1)} и ${name(cb)}` + (!isHot(ca) && !isHot(cb) && u > 5 ? ' — ноль «плавает», это обрыв нуля' : '') };
   }
   // без питания реле и таймеры обесточены: их контакты в положении «нет питания»
   const find = nets(cur, false, new Set(cur.devices.filter(d => PARTS[d.type].supply).map(d => d.id)));
@@ -603,7 +759,8 @@ function renderHint() {
     const lamps = cnt('lamp'), socks = cnt('sock'), apps = cnt('app');
     st = ['Под напряжением', lamps && 'свет: ' + lamps, socks && 'розетки: ' + socks, apps && 'техника: ' + apps].filter(Boolean).join(' · ');
   }
-  if (pending && isFree(pending)) h = 'Нажми на клемму, чтобы подключить конец, или на другой конец, чтобы скрутить';
+  if (quest) { st = ''; h = power ? '🔧 Поиск: найди, что не работает, и мультиметром — где поломка' : '🔧 Поиск неисправности: подай питание'; }
+  else if (pending && isFree(pending)) h = 'Нажми на клемму, чтобы подключить конец, или на другой конец, чтобы скрутить';
   else if (pending || rubber) h = 'Нажми на вторую клемму или внутри коробки. Отмена: тап по пустому месту';
   else if (sel && sel.kind === 'wire') h = 'Тяни кружок на проводе, чтобы изогнуть. Тап по точке изгиба убирает её';
   else if (cur.devices.length <= 1 && !cur.wires.length) h = 'Добавь устройства кнопкой «Устройство». Провод: нажми на клемму, потом на вторую';
@@ -618,6 +775,12 @@ function renderPanel() {
   const el = $('#panel');
   if (!sel || showIssues) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
+  if (quest) {
+    const name = sel.kind === 'wire' ? 'Провод' : PARTS[devById(sel.id).type].name + (devById(sel.id).props.label ? ' «' + devById(sel.id).props.label + '»' : '');
+    el.innerHTML = `<div class="p-head"><b>${esc(name)}</b><button class="ib" data-act="close" aria-label="Закрыть">✕</button></div>
+      <div class="p-btns"><button class="btn primary" data-act="guess">🔍 Неисправность здесь</button></div>`;
+    return;
+  }
   if (sel.kind === 'wire') {
     const w = wireById(sel.id);
     let amps = '';
@@ -674,8 +837,11 @@ function renderPanel() {
   if (d.type === 'src' || d.type === 'src3') {
     const u = d.props.u ?? 220;
     extra = `<div class="chips"><span class="muted unit">Напряжение в сети</span>${[160, 190, 220, 250, 280].map(v => `<button class="chip ${u === v ? 'on' : ''}" data-u="${v}">${v}</button>`).join('')}<input class="inp chip-in" data-prop="u" type="number" inputmode="numeric" step="5" value="${u}"><span class="muted unit">В</span></div>
-      <div class="p-note">Меняй, чтобы проверить реле напряжения: просадка или скачок в сети.</div>`;
+      <div class="p-note">Меняй, чтобы проверить реле напряжения: просадка или скачок в сети.</div>
+      <div class="p-btns"><button class="btn ${d.props.nbreak ? 'danger' : ''}" data-act="nbreak">${d.props.nbreak ? '✕ Обрыв нуля — вернуть ноль' : 'Сделать обрыв нуля на вводе'}</button></div>
+      <div class="p-note">При обрыве нуля нагрузки разных фаз оказываются последовательно между фазами — на слабо нагруженной фазе напряжение подскакивает до 300–380 В.</div>`;
   }
+  if (d.state.burnt) extra += '<div class="p-btns"><button class="btn primary" data-act="repair">Заменить сгоревший прибор</button></div>';
   if (p.comb) {
     const cut = d.props.cut || [];
     extra = `<div class="chips"><span class="muted unit">Зубьев</span><button class="chip" data-n="${Math.max(1, d.props.n - 1)}" aria-label="Короче">−</button><b class="unit">${d.props.n}</b><button class="chip" data-n="${Math.min(36, d.props.n + 1)}" aria-label="Длиннее">+</button>
@@ -727,6 +893,8 @@ $('#panel').onclick = e => {
   if (!b || !sel) return;
   const act = b.dataset.act;
   if (act === 'close') { sel = null; render(); renderPanel(); return; }
+  if (act === 'guess') { guessFault(); return; }
+  if (quest) return;
   if (act === 'del') { deleteSel(); return; }
   if (sel.kind === 'wire') {
     const w = wireById(sel.id);
@@ -738,6 +906,8 @@ $('#panel').onclick = e => {
     const d = devById(sel.id);
     if (act === 'rot') { snapshot(); d.rot = ((d.rot || 0) + 1) % 4; }
     else if (act === 'unplug') { snapshot(); delete d.props.plug; d.y += 60; }
+    else if (act === 'nbreak') { snapshot(); d.props.nbreak = !d.props.nbreak; }
+    else if (act === 'repair') { snapshot(); delete d.state.burnt; }
     else if (act === 'dup') {
       snapshot();
       const c = JSON.parse(JSON.stringify(d)); c.id = uid(); c.x += 40; c.y += 40; delete c.props.plug;
@@ -795,6 +965,7 @@ function miniSvg(type) {
 }
 
 $('#btn-add').onclick = () => {
+  if (quest) { toast('В режиме поиска неисправности схему не меняем. Выйти — кнопка 🔧'); return; }
   openModal(`<h3>Добавить устройство</h3>${GROUPS.map(g => `<div class="p-lbl">${g}</div><div class="pal">${
     Object.keys(PARTS).filter(k => PARTS[k].group === g && !PARTS[k].hidden).map(k => `<button class="pal-it" data-type="${k}">${miniSvg(k)}<span>${esc(PARTS[k].name)}</span></button>`).join('')
   }</div>`).join('')}`, sh => {
@@ -1033,6 +1204,7 @@ cv.addEventListener('pointermove', e => {
 
 function startDrag(g) {
   const h = g.hit;
+  if (quest) { g.type = 'pan'; return; } // в режиме поиска неисправности схему не меняем — только смотрим
   if (meter && h && (h.kind === 'term' || h.kind === 'end')) { g.type = 'pan'; return; }
   if (h && h.kind === 'term' && PARTS[h.d.type].node) { g.type = 'move'; snapshot(); g.items = [{ d: h.d, x: h.d.x, y: h.d.y }]; g.bends = []; pending = null; return; }
   if (h && h.kind === 'term') { g.type = 'wire'; pending = null; rubber = { from: { d: h.d.id, t: h.t.id }, x: g.wx, y: g.wy }; return; }
@@ -1143,6 +1315,19 @@ function tap(h, wx, wy) {
     render(); return;
   }
   if (meter && !h) { sel = null; render(); renderPanel(); return; }
+  if (quest) {
+    // поиск неисправности: выбираем провод или устройство, выключатели щёлкаются, провода не тянутся
+    pending = null;
+    if (!h || h.kind === 'bend') sel = null;
+    else if (h.kind === 'wire' || h.kind === 'mid' || h.kind === 'end') sel = { kind: 'wire', id: h.w.id };
+    else if (h.kind === 'term') sel = PARTS[h.d.type].node ? null : { kind: 'dev', id: h.d.id };
+    else if (h.kind === 'dev') {
+      const p = PARTS[h.d.type];
+      if (p.toggle && p.toggle(h.d, h.lx, h.ly)) { touch(); evaluatePower(); }
+      sel = p.isBox ? null : { kind: 'dev', id: h.d.id };
+    }
+    render(); renderPanel(); return;
+  }
   if (!h) {
     // провод от клеммы можно оставить концом внутри коробки
     if (pending && !isFree(pending) && boxAt(wx, wy)) { const from = pending; pending = null; makeWire(from, { x: snap(wx), y: snap(wy) }); }
@@ -1225,6 +1410,7 @@ window.addEventListener('resize', () => { if (cur) render(); });
 // клавиатура на компьютере
 document.addEventListener('keydown', e => {
   if (!cur || !$('#modal').hidden) return;
+  if (quest && e.key !== 'Escape') return; // в режиме поиска схему не правим
   if (e.target.closest('input, textarea')) return;
   const ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
